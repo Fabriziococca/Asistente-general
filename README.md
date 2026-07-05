@@ -1,80 +1,80 @@
-# Tito Calderón - Asistente General de Discord
+# Asistente de Operaciones y Auditoría Financiera Inteligente
 
-Este proyecto consiste en un bot multipropósito de Discord, desarrollado en Python utilizando la librería **discord.py** y una base de datos relacional hospedada en **NeonDB (PostgreSQL)** mediante **asyncpg**. El bot actúa como asistente general del servidor, automatizando de forma inteligente la administración de puntos de apoyo (bumps), el soporte al usuario, y la validación financiera autónoma de compras de rangos y solicitudes de catálogo mediante Inteligencia Artificial.
+Este proyecto consiste en un agente autónomo y asistente de operaciones desarrollado en Python, diseñado para integrarse con plataformas de mensajería en tiempo real (como Discord) y una base de datos relacional hospedada en la nube (PostgreSQL mediante NeonDB / asyncpg). Su propósito es automatizar flujos de atención al usuario, gestionar la entrega de accesos basados en privilegios, y realizar auditorías financieras autónomas en tiempo real a través de modelos de visión por inteligencia artificial (Generative AI).
+
+El sistema está diseñado bajo principios de resiliencia, alta disponibilidad y mitigación de fallos, lo que lo convierte en una solución automatizada idónea para la autogestión de transacciones y soporte.
 
 ---
 
-## 🚀 Características Principales
+## 🚀 Características y Funcionalidades Clave
 
-### 1. Sistema de Bumps (Fidelización Orgánica)
-Integración con el bot de **Disboard** para registrar el apoyo de la comunidad:
-* **Conteo Automatizado**: Escucha las interacciones de Disboard e incrementa de forma segura el contador del usuario para ese servidor en la base de datos (evitando colisiones o registros falsos).
-* **Comando `/ranking`**: Muestra una tabla clasificatoria (Top 10) estilizada con embeds dorados que indica los usuarios que más han apoyado con bumps.
-* **Comando `/mispuntos`**: Permite a cualquier miembro consultar sus puntos individuales de forma privada (ephemeral).
+### 1. Sistema de Fidelización y Registro de Actividad
+Integración con herramientas externas para el seguimiento de la interacción de los usuarios:
+* **Conteo Automatizado**: Registra la actividad y el soporte orgánico de los usuarios dentro de la base de datos, previniendo registros duplicados o inserciones inválidas mediante transacciones atómicas.
+* **Métricas de Participación**: Comandos para desplegar listados de clasificación (Top 10) con interfaces dinámicas (rich embeds) y consultas individuales de puntos acumulados.
 
-### 2. Búnker de IA y Soporte Inteligente (Tickets Cog)
-El bot administra canales de tickets creados dinámicamente (`ticket-` y `sug-`) implementando flujos de atención y un auditor de cobros automatizado:
-* **Búnker de Modelos Multi-API Key**: Para evitar bloqueos por cuota de uso gratuito (Rate Limits), el bot rota secuencialmente a través de un pool de 5 modelos de Gemini (`gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-flash-latest`) y conmuta de forma automática entre múltiples API Keys configuradas en el entorno si detecta un fallo de servicio.
-* **Auditoría Financiera por Visión de IA**:
-  * Cuando un usuario envía un comprobante (captura de imagen o PDF) en el ticket, la IA analiza visualmente los datos.
-  * **Filtro Anti-Fraude Estricto**: Valida obligatoriamente que el destinatario sea el titular de la cuenta (`Fabrizio Giovanni Cocca Ducay` o `sesarjavier28@gmail.com` en PayPal).
-  * **Verificación de Entidad Receptora**: Exige que las transferencias en pesos argentinos (ARS) provengan o tengan destino final en `Uala Bank S.A.U` (Ualá), previniendo falsificaciones basadas en plantillas editadas de Mercado Pago u otras plataformas.
-  * **Detección de Clones**: Rastrea identificadores únicos, horas y minutos repetidos en el historial para mitigar el reenvío de comprobantes viejos o duplicados.
-  * **Validación de Divisas y Combos**: Convierte divisas internacionales a USD netos en PayPal para verificar si cubre el costo de los rangos individuales o combos definidos.
-* **Entrega Automatizada de Roles**: Si el comprobante es válido, otorga inmediatamente los roles de Discord correspondientes (Diamante, Oro, Plata, o combinaciones) y registra la transacción en la tabla `pagos` de PostgreSQL.
-* **Disyuntor de Fallos y Modo Manual**: Si el sistema automático detecta 5 fallos seguidos al auditar una imagen, desactiva la IA para ese ticket, alerta al administrador (`@titocalderon`) mencionándolo e informa al usuario que su caso pasa a revisión manual. También los administradores pueden activar el modo manual con el comando `/manual`.
-* **Canje de Recompensas**: Permite a los usuarios canjear **30 puntos de bumps** por solicitudes únicas de catálogo. Al escribir *"Quiero canjear mis puntos"*, la IA conmutará a modo preventivo y el administrador podrá descontar los puntos mediante el comando administrativo `/canjear <usuario>`.
+### 2. Soporte Conversacional y Auditoría Financiera con IA
+Gestión inteligente del ciclo de vida de los canales de soporte (tickets de atención) mediante agentes conversacionales y validación autónoma de archivos:
+* **Arquitectura de Conmutación de IA (Failover Bunker)**: Para mitigar cuotas de uso y fallos de API, el bot implementa un pool de conmutación secuencial que rota a través de 5 modelos de lenguaje de última generación (`gemini-3.5-flash`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-flash-latest`) y alterna de forma dinámica entre múltiples claves de API configuradas en caso de interrupción del servicio.
+* **Auditoría Financiera por Visión Artificial**:
+  * **Procesamiento de Documentos**: Analiza de manera inmediata comprobantes en formatos de imagen o PDF cargados por los usuarios.
+  * **Prevención de Fraude**: Compara datos sensibles como el destinatario de la transferencia, la entidad financiera de destino y las marcas de tiempo contra los parámetros de seguridad establecidos en la configuración del sistema.
+  * **Mitigación de Capturas Duplicadas**: Emplea detección de firmas temporales e identificadores únicos de transacciones en el historial del canal para evitar el reenvío de comprobantes de pago previamente procesados.
+  * **Cálculo Multidivisa**: Convierte y valida transacciones de diferentes monedas a valores de referencia (por ejemplo, pesos locales a equivalentes en dólares netos) según las reglas de negocio configuradas.
+* **Asignación Automatizada de Permisos y Accesos**: Tras una validación exitosa de la transacción, el bot asigna de forma inmediata los roles y permisos del nivel adquirido en la plataforma y registra la transacción en la tabla de auditoría (`pagos`) de la base de datos PostgreSQL.
+* **Circuit Breaker y Mitigación de Errores**: En caso de acumularse fallos consecutivos de validación automática (umbral configurado en 5 intentos), el sistema suspende temporalmente el agente de IA para ese canal, notifica directamente al administrador del sistema mediante pings y delega el control a un operador humano. Cuenta con comandos dedicados (como `/manual`) para forzar este comportamiento preventivamente.
+* **Sistema de Billetera Virtual y Redención**: Permite a los usuarios utilizar puntos de interacción registrados para el canje manual de solicitudes de servicio, integrando flujos híbridos entre validación por IA y aprobación administrativa.
 
-### 3. Tareas Automatizadas en Segundo Plano (Loops)
-* **Limpieza y Ahorro de Base de Datos (`cleanup_tickets`)**: Ejecutado cada 1 hora.
-  * Elimina los canales de tickets de rangos completados de forma automática tras 24 horas de inactividad.
-  * Elimina canales abandonados que lleven 3 horas sin ningún mensaje inicial tras su creación.
-  * Cierra tickets inactivos a las 24 horas si el usuario habló pero no completó una compra.
-  * **Escudo de Sugerencias**: Protege permanentemente las peticiones de catálogo pagadas/iniciadas para evitar la pérdida de información y solicitudes del cliente.
-* **Remarketing Semanal (`auto_promo_refresh`)**: Cada 7 días limpia el canal promocional de pings previos y envía un recordatorio automático pingueando a `@everyone` para notificar actualizaciones de contenido, posicionándose estratégicamente para no enterrar los botones del creador de tickets.
+### 3. Tareas Automatizadas y Optimización de Recursos (Background Loops)
+* **Gestión de Ciclo de Vida de Canales (Cleanup Task)**: Un proceso en segundo plano que se ejecuta periódicamente cada hora para limpiar recursos huérfanos:
+  * Elimina canales de atención completados tras 24 horas de inactividad.
+  * Cierra canales creados que no registren interacción de los usuarios tras las primeras 3 horas.
+  * Remueve canales inactivos sin transacciones finalizadas tras 24 horas.
+  * **Protección de Datos Críticos**: El algoritmo protege y conserva canales categorizados como solicitudes especiales o sugerencias en curso, evitando la pérdida accidental de requerimientos del cliente.
+* **Comunicaciones Periódicas de Retención**: Módulos automatizados para refrescar y limpiar el historial de notificaciones en canales de difusión general, enviando avisos de actualización programados.
 
 ### 4. Estabilidad y Resiliencia en Producción
-* **Keep Alive**: Servidor web HTTP local integrado mediante un hilo secundario (`BaseHTTPRequestHandler`) en el puerto de red configurable por entorno, ideal para mantener viva la aplicación ante health checks de plataformas PaaS como Render.
-* **Escudo de Reintentos Anti-Cloudflare**: Ante errores típicos de red o bloqueos de Cloudflare (error HTTP 429 / 1015) al intentar iniciar sesión en Discord, el bot implementa un bucle de hasta 5 intentos con **espera y backoff exponencial progresivo** (30s, 60s, 120s...) para evitar caídas permanentes en el servidor de hosting.
+* **Servidor de Estado (Health Check / Keep Alive)**: Servidor web HTTP ligero que responde a solicitudes de estado para evitar la suspensión o el apagado de la instancia en plataformas PaaS (como Render).
+* **Bypass de Restricciones Perimetrales (HTTP 429 / 1015)**: Implementa una máquina de estados con reintentos y retroceso exponencial progresivo (exponential backoff) para manejar de forma robusta los bloqueos temporales por límites de peticiones impuestos por proxies y firewalls (como Cloudflare) en entornos de nube.
 
 ---
 
 ## 📂 Estructura del Repositorio
 
-* **[main.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/main.py)**: Archivo de entrada principal. Se encarga de inicializar el pool de conexiones NeonDB, asegurar la creación de tablas iniciales, cargar dinámicamente las extensiones (Cogs), sincronizar comandos Slash globales y manejar los reintentos de arranque y keep-alive.
-* **[keep_alive.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/keep_alive.py)**: Servidor web en un hilo secundario que responde saludablemente a las solicitudes de ping HTTP de plataformas de despliegue para evitar que el bot se suspenda por inactividad.
-* **[requirements.txt](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/requirements.txt)**: Lista de dependencias del proyecto (`discord.py`, `python-dotenv`, `asyncpg`, `google-generativeai`, `flask`).
-* **[cogs/](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs)**: Directorio con módulos específicos del bot.
-  * **[cogs/bumps.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs/bumps.py)**: Lógica y comandos relacionados al conteo de bumps de Disboard y visualización de rankings locales.
-  * **[cogs/tickets.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs/tickets.py)**: Módulo de ventas, sistema inteligente de tickets, control de IA conversacional y auditor financiero basado en visión (Gemini).
+* **[main.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/main.py)**: Orquestador y punto de entrada. Configura la base de datos relacional, carga de forma dinámica los submódulos, inicializa comandos de barra diagonal y levanta los servicios de resiliencia de conexión.
+* **[keep_alive.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/keep_alive.py)**: Hilo secundario para mantener el servicio activo mediante respuestas de salud en red.
+* **[requirements.txt](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/requirements.txt)**: Dependencias e integraciones externas.
+* **[cogs/](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs)**: Módulos de lógica encapsulada.
+  * **[cogs/bumps.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs/bumps.py)**: Módulo encargado de la lógica de gamificación, puntos de fidelidad y rankings.
+  * **[cogs/tickets.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs/tickets.py)**: Core de operaciones, automatización de soporte por chat, integración con LLM multimodales y auditoría de documentos de transferencia.
 
 ---
 
 ## ⚙️ Configuración y Variables de Entorno
 
-Para ejecutar este proyecto de forma local o en la nube, debes crear un archivo `.env` en la raíz del proyecto con la siguiente estructura:
+Debes crear un archivo `.env` en la raíz del proyecto para definir las credenciales y configuraciones del entorno de ejecución:
 
 ```env
-DISCORD_TOKEN=TuTokenDeDiscordAqui
+DISCORD_TOKEN=TuTokenDeAccesoPlataforma
 DATABASE_URL=postgresql://usuario:contraseña@servidor.neon.tech/nombre_db?sslmode=require
 
-# API Keys de Gemini para el balanceo y rotación (Puedes agregar varias iniciando con GEMINI_API_KEY)
-GEMINI_API_KEY=TuClavePrincipalDeGemini
-GEMINI_API_KEY_2=TuClaveSecundariaDeGemini
-GEMINI_API_KEY_3=OtraClaveOpcional
+# Claves de API de IA para balanceo y rotación redundante
+GEMINI_API_KEY=ClavePrincipalIA
+GEMINI_API_KEY_2=ClaveSecundariaIA
+GEMINI_API_KEY_3=ClaveTerciariaIA
 
-# Puerto HTTP opcional para Render/keep_alive (Por defecto: 8080)
+# Puerto HTTP para el servicio de Health Check (Default: 8080)
 PORT=8080
 ```
 
 ---
 
-## 🗄️ Base de Datos (Esquema SQL)
+## 🗄️ Esquema de Base de Datos (SQL)
 
-El bot está diseñado para inicializar de manera automática sus tablas esenciales si no existen. No obstante, a continuación se detallan las estructuras relacionales empleadas en NeonDB:
+La aplicación inicializa de manera automática las siguientes estructuras relacionales al arrancar. El diseño de almacenamiento está optimizado para consultas concurrentes:
 
 ```sql
--- Tabla para el conteo de bumps
+-- Tabla para el seguimiento de puntos e interacciones
 CREATE TABLE IF NOT EXISTS bumps (
     user_id TEXT,
     guild_id TEXT,
@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS bumps (
     PRIMARY KEY (user_id, guild_id)
 );
 
--- Tabla para el estado de los tickets
+-- Tabla para la gestión del estado de los canales de soporte
 CREATE TABLE IF NOT EXISTS tickets (
     channel_id BIGINT PRIMARY KEY,
     user_id BIGINT,
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     hablo BOOLEAN DEFAULT FALSE
 );
 
--- Tabla para el historial de transacciones validadas
+-- Tabla para el registro y auditoría de transacciones aprobadas
 CREATE TABLE IF NOT EXISTS pagos (
     pago_id SERIAL PRIMARY KEY,
     user_id BIGINT,
@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS pagos (
     moneda TEXT
 );
 
--- Tabla de usuarios registrados
+-- Tabla general de usuarios registrados
 CREATE TABLE IF NOT EXISTS usuarios (
     user_id BIGINT PRIMARY KEY
 );
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
 
 ## 🛠️ Instalación y Despliegue Local
 
-Sigue estos pasos para levantar el entorno de desarrollo localmente:
+Sigue estos pasos para configurar el entorno de ejecución:
 
 1. **Clonar el repositorio**:
    ```bash
@@ -118,7 +118,7 @@ Sigue estos pasos para levantar el entorno de desarrollo localmente:
    cd Contador-de-bumps
    ```
 
-2. **Crear e inicializar un entorno virtual de Python**:
+2. **Inicializar entorno virtual**:
    * En Windows:
      ```bash
      python -m venv venv
@@ -135,8 +135,8 @@ Sigue estos pasos para levantar el entorno de desarrollo localmente:
    pip install -r requirements.txt
    ```
 
-4. **Configurar el entorno**:
-   Crea y completa el archivo `.env` según la sección de [Configuración](#%EF%B8%8F-configuraci%C3%B3n-y-variables-de-entorno).
+4. **Configurar variables**:
+   Copia el esquema del apartado [Configuración](#%EF%B8%8F-configuraci%C3%B3n-y-variables-de-entorno) en un archivo `.env`.
 
 5. **Iniciar el bot**:
    ```bash
@@ -145,14 +145,11 @@ Sigue estos pasos para levantar el entorno de desarrollo localmente:
 
 ---
 
-## 🚀 Despliegue en Render (o similar)
+## 🚀 Despliegue Cloud (PaaS)
 
-1. En el dashboard de Render, crea un nuevo **Web Service**.
-2. Vincula tu repositorio de GitHub `Contador-de-bumps`.
-3. Configura los siguientes parámetros en Render:
-   * **Runtime**: `Python`
+Para desplegar la aplicación en servicios como Render, Heroku o similares:
+1. Crea un **Web Service** y conéctalo al repositorio.
+2. Configura los siguientes comandos de despliegue:
    * **Build Command**: `pip install -r requirements.txt`
    * **Start Command**: `python main.py`
-4. Añade tus variables de entorno en la sección **Environment**:
-   * Configura `DISCORD_TOKEN`, `DATABASE_URL` y las correspondientes `GEMINI_API_KEY`s.
-   * Render inyectará de forma automática la variable `PORT` (por lo general `10000`), la cual será capturada automáticamente por `keep_alive.py`.
+3. Registra las variables de entorno detalladas en el apartado de configuración. El servicio de Health Check enlazará automáticamente el puerto dinámico asignado por el hosting.

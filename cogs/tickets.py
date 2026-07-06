@@ -182,7 +182,7 @@ class Tickets(commands.Cog):
                 )
                 embed.add_field(
                     name="💰 OPCIÓN A: COSTO FIJO DE LA SOLICITUD", 
-                    value="🇦🇷 Argentina: $2000 ARS\n🌍 Internacional: $2 USD", 
+                    value="🇦🇷 Argentina: $3000 ARS\n🌍 Internacional: $3 USD", 
                     inline=False
                 )
                 embed.add_field(name="Alias (ARS):", value="LENGUA.LUJOSA.TELAR", inline=False)
@@ -423,9 +423,9 @@ SOS UN AUDITOR FINANCIERO ESTRICTO. Analizá esta imagen o PDF para validar si e
 REGLA CRÍTICA Y ESTRICTA: Devues verificar OBLIGATORIAMENTE que el destinatario de la transferencia sea 'Fabrizio Giovanni Cocca Ducay' (o Fabrizio Cocca), O que el correo destinatario sea 'sesarjavier28@gmail.com' (para el caso de PayPal). Si es otra persona, marca "es_comprobante": false.
 REGLA BANCARIA ARS: Si la moneda es pesos (ARS), debes validar obligatoriamente que el banco o entidad financiera de destino/recepción sea estrictamente 'Uala Bank S.A.U' (o Ualá). Si el comprobante muestra que fue enviado a 'Mercado Pago' u otra entidad como destino, se trata de una plantilla falsa; marca automáticamente "es_comprobante": false de forma silenciosa.
 REGLA ANTI-DUPLICADOS: Si detectás que el usuario envía imágenes clonadas con el mismo número de operación o exactamente la misma hora/minuto en el historial, marca "es_comprobante": false.
-REGLA PAYPAL MONEDA EXTRANJERA (BIMONETARIO): Si la imagen o PDF corresponde a un recibo de PayPal emitido en una divisa local extranjera (como Pesos Mexicanos MXN, Pesos Chilenos CLP, Euros EUR, etc.), debes buscar obligatoriamente en todo el texto del documento el desglose de conversión o el valor neto equivalente reflejado en Dólares (USD) (por ejemplo: "$2.17 USD" o "$2.00 USD" al lado de "$40.00 MXN"). Si encuentras que este equivalente neto convertido a USD cumple con nuestro costo fijo de $2 USD, debes considerarlo válido y marcar "valido": true, "moneda": "USD" y asignar a "monto" el valor flotante neto en USD hallado.
+REGLA PAYPAL MONEDA EXTRANJERA (BIMONETARIO): Si la imagen o PDF corresponde a un recibo de PayPal emitido en una divisa local extranjera (como Pesos Mexicanos MXN, Pesos Chilenos CLP, Euros EUR, etc.), debes buscar obligatoriamente en todo el texto del documento el desglose de conversión o el valor neto equivalente reflejado en Dólares (USD) (por ejemplo: "$3.17 USD" o "$3.00 USD" al lado de "$60.00 MXN"). Si encuentras que este equivalente neto convertido a USD cumple con nuestro costo fijo de $3 USD, debes considerarlo válido y marcar "valido": true, "moneda": "USD" y asignar a "monto" el valor flotante neto en USD hallado.
 REGLA 1: Buscá evidencia de que el pago finalizó (ej: "Transferencia exitosa", "Pago realizado").
-REGLA 2: El costo de la sugerencia es exactamente $2000 ARS o $2 USD. Si el monto coincide o supera este valor, marca "valido": true. Caso contrario, marca "valido": false.
+REGLA 2: El costo de la sugerencia es exactamente $3000 ARS o $3 USD. Si el monto coincide o supera este valor, marca "valido": true. Caso contrario, marca "valido": false.
 
 Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses markdown ni comillas invertidas):
 {{
@@ -534,7 +534,7 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
                         await advertencia.edit(content=f"🤔 **Monto no reconocido**: Detectamos un pago de **{datos.get('monto')} {datos.get('moneda')}**, pero no coincide con ningún rango exacto y no especificaste cuál querías en el chat. ¿Podés aclarar qué rangos estás comprando?")
                     elif not valido_bool:
                         if es_sugerencia:
-                            await advertencia.edit(content=f"⚠️ **Comprobante Insuficiente**\nEl pago detectado de **{datos['monto']} {datos['moneda']}** no es suficiente para procesar la petición.\nEl costo fijo es de $2000 ARS / $2 USD. Por favor, abona el resto y envía el comprobante completo.")
+                            await advertencia.edit(content=f"⚠️ **Comprobante Insuficiente**\nEl pago detectado de **{datos['monto']} {datos['moneda']}** no es suficiente para procesar la petición.\nEl costo fijo es de $3000 ARS / $3 USD. Por favor, abona el resto y envía el comprobante completo.")
                         else:
                             diferencia = float(datos.get("diferencia", 0.0))
                             faltante = abs(diferencia)
@@ -658,7 +658,7 @@ TUS DATOS DE COBRO ESTRICTOS:
 - Titular de la cuenta bancaria: Fabrizio Giovanni Cocca Ducay (Tito Calderón es solo el nombre de la comunidad).
 
 REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
-1. PRECIO FIJO: Cada petición cuesta $2000 ARS o $2 USD.
+1. PRECIO FIJO: Cada petición cuesta $3000 ARS o $3 USD.
 2. REGLA DE BUMPS: Si el usuario menciona que quiere hacer un canje de puntos de su billetera virtual, recuérdale amablemente que debe escribir explícitamente "Quiero canjear mis puntos" para que el sistema conmute su ticket y dé aviso a Tito Calderón para atenderlo.
 3. RESPUESTAS CORTAS: Máximo 1 o 2 párrafos cortos (no más de 60 palabras). Sé directo y al grano.
 4. IDENTIDAD BANCARIA: Si preguntan el nombre del titular o a quién transferir, es Fabrizio Giovanni Cocca Ducay.
@@ -690,7 +690,7 @@ REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
 4. ASINCRONÍA DE FOTOS: Si el usuario dice "ya lo mandé", "ahí pasé el comprobante", responde: "¡Buenísimo! El sistema automático de auditoría lo está analizando en este momento." NO le pidas que envíe la foto de nuevo.
 5. ESTADO POST-VENTA (MEMORIA): Si en el HISTORIAL ves que el sistema ya validó el pago y dijo "Rol/es asignado/s" o "Pago Verificado con Éxito", TU OBJETIVO CAMBIÓ. NO vendas más ni pidas el comprobante. Dale la bienvenida al usuario, confirmale que su rol ya está activo y que disfrute del contenido.
 6. SEGURIDAD CRÍTICA (ZERO TRUST): TIENES TOTALMENTE PROHIBIDO usar el comando [GRANT_ROLE] basándote únicamente en la palabra del usuario. SOLO usalo si ves en el HISTORIAL que el sistema (el bot) ya validó físicamente una imagen y pidió aclarar el rango.
-7. CONSULTAS DE DISPONIBILIDAD (REGLA CRÍTICA): Si (y solo si) el usuario pregunta por la disponibilidad de una modelo en específico (ej: "¿Tienen contenido de tal chica?", "Quiero ver a X"), explicale de forma servicial que al contar con más de 300 canales el catálogo es enorme. Decile que revise bien las listas de nombres en los rangos Oro y Diamante. Si comprueba que no está, aclarale que al adquirir el rango Oro o Diamante desbloqueará un canal exclusivo de peticiones donde, abonando un costo extra (de unos $2 USD actuales), puede solicitar que Tito Calderón busque e incorpore a esa modelo específica de forma privada. Prohibido mencionar esta opción de sugerencia o costo extra si el usuario no preguntó explícitamente por una chica.
+7. CONSULTAS DE DISPONIBILIDAD (REGLA CRÍTICA): Si (y solo si) el usuario pregunta por la disponibilidad de una modelo en específico (ej: "¿Tienen contenido de tal chica?", "Quiero ver a X"), explicale de forma servicial que al contar con más de 300 canales el catálogo es enorme. Decile que revise bien las listas de nombres en los rangos Oro y Diamante. Si comprueba que no está, aclarale que al adquirir el rango Oro o Diamante desbloqueará un canal exclusivo de peticiones donde, abonando un costo extra (de unos $3 USD actuales), puede solicitar que Tito Calderón busque e incorpore a esa modelo específica de forma privada. Prohibido mencionar esta opción de sugerencia o costo extra si el usuario no preguntó explícitamente por una chica.
 INSTRUCCIÓN TÉCNICA (SOLO PARA ACLARAR RANGOS FALTANTES):
 Si (y solo si) un pago previo fue validado por el sistema en el historial PERO faltó aclarar el rango que cubría ese pago, incluye al FINAL de tu respuesta este comando exacto: [GRANT_ROLE: NombreDelRol] (reemplaza NombreDelRol por Diamante, Oro o Plata. Si compró un combo, ponelos separados por coma, ej: [GRANT_ROLE: Diamante, Oro]).
 

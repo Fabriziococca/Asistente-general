@@ -75,7 +75,8 @@ class Tickets(commands.Cog):
                 user_id BIGINT,
                 ticket_id BIGINT,
                 monto NUMERIC(10, 2),
-                moneda TEXT
+                moneda TEXT,
+                concepto TEXT
             )
         """
         try:
@@ -311,6 +312,124 @@ class Tickets(commands.Cog):
         except Exception as e:
             print(f"❌ [DB Error] Error al ejecutar el comando de canjear puntos: {e}")
             await interaction.response.send_message("❌ Ocurrió un inconveniente en el motor de la base de datos al intentar procesar el canje.", ephemeral=True)
+
+    @app_commands.command(name="finanzas", description="Muestra el reporte financiero mensual detallado (ARS y USD)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        mes="El mes a consultar (1 = Enero, 12 = Diciembre). Por defecto el mes actual.",
+        ano="El año a consultar (ej: 2026). Por defecto el año actual."
+    )
+    @app_commands.choices(mes=[
+        app_commands.Choice(name="Enero", value=1),
+        app_commands.Choice(name="Febrero", value=2),
+        app_commands.Choice(name="Marzo", value=3),
+        app_commands.Choice(name="Abril", value=4),
+        app_commands.Choice(name="Mayo", value=5),
+        app_commands.Choice(name="Junio", value=6),
+        app_commands.Choice(name="Julio", value=7),
+        app_commands.Choice(name="Agosto", value=8),
+        app_commands.Choice(name="Septiembre", value=9),
+        app_commands.Choice(name="Octubre", value=10),
+        app_commands.Choice(name="Noviembre", value=11),
+        app_commands.Choice(name="Diciembre", value=12),
+    ])
+    async def ver_finanzas(self, interaction: discord.Interaction, mes: int = None, ano: int = None):
+        import datetime
+        ahora = datetime.datetime.now()
+        
+        mes_query = mes or ahora.month
+        ano_query = ano or ahora.year
+        
+        nombres_meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+        nombre_mes_str = nombres_meses[mes_query - 1]
+        
+        # Deferir respuesta ya que la base de datos puede tener lag
+        await interaction.response.defer(ephemeral=True)
+        
+        query = """
+            SELECT concepto, moneda, monto, COUNT(*) as cantidad, SUM(monto) as total_monto
+            FROM pagos
+            WHERE CAST(EXTRACT(MONTH FROM fecha_pago) AS INTEGER) = $1 
+              AND CAST(EXTRACT(YEAR FROM fecha_pago) AS INTEGER) = $2
+            GROUP BY concepto, moneda, monto
+            ORDER BY concepto, moneda
+        """
+        
+        try:
+            async with self.bot.pool.acquire(timeout=10.0) as conn:
+                filas = await conn.fetch(query, int(mes_query), int(ano_query))
+                
+            if not filas:
+                await interaction.followup.send(f"📭 No se encontraron registros de transacciones para **{nombre_mes_str} de {ano_query}**.", ephemeral=True)
+                return
+                
+            # Agrupación y sumatorias
+            totales_generales = {"ARS": {"monto": 0.0, "cantidad": 0}, "USD": {"monto": 0.0, "cantidad": 0}}
+            desglose = {} # concepto -> { 'ARS': {monto, cant}, 'USD': {monto, cant} }
+            
+            for fila in filas:
+                concepto = fila["concepto"] or "No especificado"
+                moneda = fila["moneda"] or "ARS"
+                cantidad = int(fila["cantidad"])
+                total_monto = float(fila["total_monto"])
+                
+                # Sumar a totales generales
+                totales_generales[moneda]["monto"] += total_monto
+                totales_generales[moneda]["cantidad"] += cantidad
+                
+                if concepto not in desglose:
+                    desglose[concepto] = {
+                        "ARS": {"monto": 0.0, "cantidad": 0},
+                        "USD": {"monto": 0.0, "cantidad": 0}
+                    }
+                desglose[concepto][moneda]["monto"] += total_monto
+                desglose[concepto][moneda]["cantidad"] += cantidad
+                
+            # Construir Embed
+            embed = discord.Embed(
+                title=f"📊 Reporte Financiero - {nombre_mes_str} {ano_query}",
+                color=0x2B2D31, # Color oscuro de Discord
+                timestamp=interaction.created_at
+            )
+            
+            # Campo resumen general
+            resumen_value = (
+                f"• 🇦🇷 **Total Pesos**: `${totales_generales['ARS']['monto']:,.2f} ARS` "
+                f"({totales_generales['ARS']['cantidad']} transacciones)\n"
+                f"• 🌍 **Total Dólares**: `${totales_generales['USD']['monto']:,.2f} USD` "
+                f"({totales_generales['USD']['cantidad']} transacciones)"
+            )
+            embed.add_field(name="💰 Resumen de Ingresos", value=resumen_value, inline=False)
+            
+            # Campo desglose por concepto
+            desglose_value = ""
+            # Ordenamos los conceptos alfabéticamente
+            for conc in sorted(desglose.keys()):
+                datos_conc = desglose[conc]
+                ars_info = ""
+                usd_info = ""
+                
+                if datos_conc["ARS"]["cantidad"] > 0:
+                    ars_info = f"`{datos_conc['ARS']['cantidad']} en ARS` (`${datos_conc['ARS']['monto']:,.2f}`)"
+                if datos_conc["USD"]["cantidad"] > 0:
+                    usd_info = f"`{datos_conc['USD']['cantidad']} en USD` (`${datos_conc['USD']['monto']:,.2f}`)"
+                
+                detalles = " | ".join(filter(None, [ars_info, usd_info]))
+                desglose_value += f"• **{conc}**: {detalles}\n"
+                
+            if not desglose_value:
+                desglose_value = "No hay desglose disponible."
+                
+            embed.add_field(name="📦 Ventas por Concepto", value=desglose_value, inline=False)
+            embed.set_footer(text="Datos extraídos en tiempo real desde NeonDB")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except asyncio.TimeoutError:
+            await interaction.followup.send("⚠️ La base de datos tardó demasiado en responder.", ephemeral=True)
+        except Exception as e:
+            print(f"❌ [DB Error] en comando finanzas: {e}")
+            await interaction.followup.send("❌ Ocurrió un error al intentar consultar el reporte financiero.", ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -556,7 +675,7 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
                 try:
                     async with self.bot.pool.acquire(timeout=5.0) as conn:
                         await conn.execute(
-                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda) VALUES ($1, $2, $3, $4)",
+                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto) VALUES ($1, $2, $3, $4, 'Sugerencia')",
                             message.author.id, message.channel.id, float(datos.get('monto', 0)), datos.get('moneda', 'ARS')
                         )
                 except Exception as e:
@@ -600,8 +719,8 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
                         monto_num = float(datos.get('monto', 0))
                         moneda_str = datos.get('moneda', 'ARS')
                         await conn.execute(
-                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda) VALUES ($1, $2, $3, $4)",
-                            message.author.id, message.channel.id, monto_num, moneda_str
+                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto) VALUES ($1, $2, $3, $4, $5)",
+                            message.author.id, message.channel.id, monto_num, moneda_str, rol
                         )
                 except Exception as e:
                     print(f"❌ [DB Error] No se pudo registrar el pago en la tabla 'pagos': {e}")
@@ -736,8 +855,8 @@ Consulta actual del usuario: "{message.content}"
                                         for r_name in nombres_roles_asignados:
                                             monto_estimado = ROLES[r_name]["ars"] 
                                             await conn.execute(
-                                                "INSERT INTO pagos (user_id, ticket_id, monto, moneda) VALUES ($1, $2, $3, $4)",
-                                                message.author.id, message.channel.id, float(monto_estimado), "ARS"
+                                                "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto) VALUES ($1, $2, $3, $4, $5)",
+                                                message.author.id, message.channel.id, float(monto_estimado), "ARS", r_name
                                             )
                                 except Exception as e:
                                     print(f"❌ [DB Error] No se pudo registrar el pago aclarado en la tabla 'pagos': {e}")

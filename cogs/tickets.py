@@ -177,35 +177,37 @@ class Tickets(commands.Cog):
             # --- DETECCIÓN E INYECCIÓN DE EMBED BASADO EN CATEGORÍA ---
             if channel and (channel.category_id == ID_CATEGORIA_SUGERENCIAS or channel.name.startswith("sug-")):
                 embed = discord.Embed(
-                    title="💎 Petición Única de Modelos", 
+                    title="💎 Petición Única de Modelos (Pre-Compra)", 
                     description="Elegí la chica que querés incorporar al catálogo de forma 100% privada o utiliza tus puntos acumulados.", 
                     color=0x1DB954 # Color Verde Premium Estilo Spotify
                 )
                 embed.add_field(
-                    name="💰 OPCIÓN A: COSTO FIJO DE LA SOLICITUD", 
-                    value="🇦🇷 Argentina: $3000 ARS\n🌍 Internacional: $3 USD", 
+                    name="📋 PROCESO DE PRE-COMPRA", 
+                    value=(
+                        "1. **Enviá el nombre y redes sociales/enlace** de la modelo que querés sugerir.\n"
+                        "2. **Aguardá en este chat** a que la administración verifique la disponibilidad de su contenido.\n"
+                        "3. **Una vez confirmado por el Administrador**, realizá el pago ($3000 ARS / $3 USD) o procedé con el canje si tenés los puntos."
+                    ), 
                     inline=False
                 )
-                embed.add_field(name="Alias (ARS):", value="LENGUA.LUJOSA.TELAR", inline=False)
-                embed.add_field(name="CBU (ARS):", value="3840200500000026286680", inline=False)
                 embed.add_field(
-                    name="🌍 DOLARES (PayPal) Enviar monto exacto a este correo:", 
-                    value="sesarjavier28@gmail.com", 
+                    name="⚠️ COMPROMISO DE COMPRA (100%)",
+                    value=(
+                        "Este canal es exclusivo para procesar compras. Iniciar la búsqueda e investigación de una modelo "
+                        "implica un compromiso de pago obligatorio si confirmamos que está disponible.\n\n"
+                        "Si sugerís una modelo, te confirmamos que su contenido está disponible y luego decidís no pagar, "
+                        "se te aplicará un aviso (warn) o baneo del servidor por abuso del soporte."
+                    ),
                     inline=False
                 )
                 embed.add_field(
                     name="🎁 OPCIÓN B: CANJEAR POR BUMPS (GRATIS)",
-                    value="Si acumulaste **30 Bumps** apoyando al servidor con el sistema Disboard, podés canjearlos por esta petición.\n\n👉 Para proceder con esta opción, simplemente escribí acá en el chat: **'Quiero canjear mis puntos'** y aguardá las indicaciones de la administración.",
-                    inline=False
-                )
-                embed.add_field(
-                    name="✅ ¿Cómo proceder con el pago? Seguí estos pasos:", 
-                    value="1. Envía la foto o PDF del comprobante de pago de la sugerencia.\n2. Enviá una **red social o URL de la modelo** (Instagram, Twitter, OnlyFans, TikTok, etc.) para procesar la búsqueda.\n3. El bot validará el monto y **Tito Calderón** se encargará de procesar e incorporar el canal.\n\n*🛡️ Garantía Absoluta*: Si el contenido solicitado no se encuentra disponible, **se te devuelve el dinero de inmediato**.", 
+                    value="Si acumulaste **30 Bumps** apoyando al servidor con el sistema Disboard, podés canjearlos por esta petición.\n\n👉 Para proceder con esta opción, simplemente escribí acá en el chat: **'Quiero canjear mis puntos'** y aguardá las indicaciones del bot.",
                     inline=False
                 )
                 embed.add_field(
                     name="⚠️ INFORMACION DE INFRAESTRUCTURA (CUPOS LIMITADOS)",
-                    value="Discord prohíbe tener más de 500 canales en total por servidor. Actualmente estamos cerca de ese numero, lo que nos deja un margen operativo ajustado. Por este motivo, **el precio de las peticiones e intercambios irá aumentando progresivamente** a medida que se completen los canales para regular el almacenamiento.",
+                    value="Discord prohíbe tener más de 500 canales en total por servidor. Por este motivo, **el precio de las peticiones e intercambios irá aumentando progresivamente** a medida que se completen los canales para regular el almacenamiento.",
                     inline=False
                 )
                 bienvenida = (
@@ -770,22 +772,22 @@ Actúa como un asistente virtual premium de Discord para atender la zona de PETI
 HISTORIAL DE CONVERSACIÓN RECIENTE:
 {contexto_previo}
 
-TUS DATOS DE COBRO ESTRICTOS:
-- Alias (MercadoPago/Bancos ARS): LENGUA.LUJOSA.TELAR
-- CBU: 3840200500000026286680
-- PayPal (USD): sesarjavier28@gmail.com
-- Titular de la cuenta bancaria: Fabrizio Giovanni Cocca Ducay (Tito Calderón es solo el nombre de la comunidad).
-
 REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
-1. PRECIO FIJO: Cada petición cuesta $3000 ARS o $3 USD.
-2. REGLA DE BUMPS: Si el usuario menciona que quiere hacer un canje de puntos de su billetera virtual, recuérdale amablemente que debe escribir explícitamente "Quiero canjear mis puntos" para que el sistema conmute su ticket y dé aviso a Tito Calderón para atenderlo.
-3. RESPUESTAS CORTAS: Máximo 1 o 2 párrafos cortos (no más de 60 palabras). Sé directo y al grano.
-4. IDENTIDAD BANCARIA: Si preguntan el nombre del titular o a quién transferir, es Fabrizio Giovanni Cocca Ducay.
-5. EXIGIR RED SOCIAL: El usuario DEBE mandar una red social o URL de la modelo.
-6. ASINCRONÍA DE FOTOS: Si el usuario dice "ahí pasé la foto", "ya pagué" o "mandé el comprobante", responde: "¡Perfecto! El sistema de auditoría lo está analizando en este preciso momento." NO vuelvas a pedir la foto.
-7. ESTADO POST-VENTA (MEMORIA): Si en el HISTORIAL ves que el bot ya dijo "Pago de Petición Verificado con Éxito", tu objetivo cambió. NO pidas comprobantes ni sigas vendiendo. Agradecele y decile que Tito Calderón ya está procesando su pedido.
-8. PRIVACIDAD ABSOLUTA: El proceso es privado y anónimo.
-9. ZERO TRUST: No des nada por válido solo con palabras si no ves la validación en el historial.
+1. PROTOCOLO DE PRE-COMPRA: Explícale al usuario que primero debe enviar el nombre o red social/URL de la modelo para verificar si su contenido está disponible. Tito Calderón comprobará esto a la brevedad.
+2. COMPROMISO DE COMPRA (100%): Si el usuario duda o consulta, recuérdale con educación que sugerir una modelo e iniciar la búsqueda activa un compromiso de pago obligatorio si confirmamos que está disponible. Si decide no pagar tras la confirmación, se le aplicará un aviso (warn) o baneo por abuso de soporte.
+3. REGLA DE PAGOS (CRÍTICA): NO proporciones datos bancarios (CBU, Alias, PayPal) ni pidas comprobantes en la etapa inicial. SOLO podrás dar los datos de cobro si ves en el HISTORIAL de conversación que un Administrador o Tito Calderón ya confirmó explícitamente que la modelo está disponible (ej. diciendo "confirmado", "está disponible", "puedes proceder al pago", etc.).
+4. DATOS DE COBRO (Proporcionar ÚNICAMENTE tras confirmación de disponibilidad en el historial):
+   - Costo Fijo: $3000 ARS o $3 USD.
+   - Alias: LENGUA.LUJOSA.TELAR
+   - CBU: 3840200500000026286680
+   - PayPal (USD): sesarjavier28@gmail.com
+   - Titular de la cuenta bancaria: Fabrizio Giovanni Cocca Ducay (Tito Calderón es solo el nombre de la comunidad).
+5. REGLA DE BUMPS: Si el usuario menciona que quiere hacer un canje de puntos de su billetera virtual (30 puntos), recuérdale amablemente que debe escribir explícitamente "Quiero canjear mis puntos" para que el bot dé aviso a administración.
+6. RESPUESTAS CORTAS: Máximo 1 o 2 párrafos cortos (no más de 60 palabras). Sé directo y al grano.
+7. ASINCRONÍA DE FOTOS: Si el usuario dice "ahí pasé la foto", "ya pagué" o "mandé el comprobante", responde: "¡Perfecto! El sistema de auditoría lo está analizando en este preciso momento." NO vuelvas a pedir la foto.
+8. ESTADO POST-VENTA (MEMORIA): Si en el HISTORIAL ves que el bot ya dijo "Pago de Petición Verificado con Éxito", tu objetivo cambió. NO pidas comprobantes ni sigas vendiendo. Agradecele y decile que Tito Calderón ya está procesando su pedido.
+9. PRIVACIDAD ABSOLUTA: El proceso es privado y anónimo.
+10. ZERO TRUST: No des nada por válido solo con palabras si no ves la validación en el historial.
 
 Consulta actual del usuario: "{message.content}"
 """

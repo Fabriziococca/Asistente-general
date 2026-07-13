@@ -319,27 +319,82 @@ class Tickets(commands.Cog):
             print(f"❌ [DB Error] Error al ejecutar el comando de canjear puntos: {e}")
             await interaction.response.send_message("❌ Ocurrió un inconveniente en el motor de la base de datos al intentar procesar el canje.", ephemeral=True)
 
-    @app_commands.command(name="finanzas", description="Muestra el reporte financiero mensual detallado (ARS y USD)")
+    @app_commands.command(name="anular", description="Anula y elimina los registros de pago asociados a un ticket específico")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
+        canal_ticket="El canal del ticket cuyos pagos deseas anular. Por defecto, el canal actual."
+    )
+    async def anular_pago_ticket(self, interaction: discord.Interaction, canal_ticket: discord.abc.GuildChannel = None):
+        target_channel = canal_ticket or interaction.channel
+        
+        ch_name = getattr(target_channel, 'name', '')
+        es_ticket = ch_name.startswith("ticket-") or ch_name.startswith("sug-")
+        if not es_ticket:
+            await interaction.response.send_message(
+                "⚠️ Este comando solo se puede aplicar sobre canales de tickets (`ticket-xxxx` o `sug-xxxx`).",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            async with self.bot.pool.acquire(timeout=5.0) as conn:
+                pagos_eliminados = await conn.fetch(
+                    "SELECT monto, moneda, concepto FROM pagos WHERE ticket_id = $1",
+                    target_channel.id
+                )
+                
+                if not pagos_eliminados:
+                    await interaction.followup.send(
+                        f"📭 No se encontraron registros de pago asociados al ticket {target_channel.mention} en la base de datos.",
+                        ephemeral=True
+                    )
+                    return
+                
+                await conn.execute("DELETE FROM pagos WHERE ticket_id = $1", target_channel.id)
+                
+            desglose_borrado = []
+            for p in pagos_eliminados:
+                desglose_borrado.append(f"• **{p['concepto']}**: `${p['monto']:.2f} {p['moneda']}`")
+            
+            detalles_str = "\n".join(desglose_borrado)
+            await interaction.followup.send(
+                f"✅ **Pagos Anulados con Éxito**\n\nSe han eliminado de forma permanente los siguientes registros de pago asociados al ticket {target_channel.mention}:\n{detalles_str}\n\n*Las estadísticas financieras de este mes se actualizarán de inmediato.*",
+                ephemeral=True
+            )
+        except Exception as e:
+            print(f"❌ [DB Error] al anular pago de ticket {target_channel.id}: {e}")
+            await interaction.followup.send("❌ Ocurrió un error al intentar anular los pagos en la base de datos.", ephemeral=True)
+
+    @app_commands.command(name="finanzas", description="Muestra el reporte financiero mensual detallado (ARS o USD)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(
+        divisa="La divisa que deseas consultar (ARS para pesos, USD para dólares).",
         mes="El mes a consultar (1 = Enero, 12 = Diciembre). Por defecto el mes actual.",
         ano="El año a consultar (ej: 2026). Por defecto el año actual."
     )
-    @app_commands.choices(mes=[
-        app_commands.Choice(name="Enero", value=1),
-        app_commands.Choice(name="Febrero", value=2),
-        app_commands.Choice(name="Marzo", value=3),
-        app_commands.Choice(name="Abril", value=4),
-        app_commands.Choice(name="Mayo", value=5),
-        app_commands.Choice(name="Junio", value=6),
-        app_commands.Choice(name="Julio", value=7),
-        app_commands.Choice(name="Agosto", value=8),
-        app_commands.Choice(name="Septiembre", value=9),
-        app_commands.Choice(name="Octubre", value=10),
-        app_commands.Choice(name="Noviembre", value=11),
-        app_commands.Choice(name="Diciembre", value=12),
-    ])
-    async def ver_finanzas(self, interaction: discord.Interaction, mes: int = None, ano: int = None):
+    @app_commands.choices(
+        divisa=[
+            app_commands.Choice(name="Pesos (ARS)", value="ARS"),
+            app_commands.Choice(name="Dólares (USD)", value="USD")
+        ],
+        mes=[
+            app_commands.Choice(name="Enero", value=1),
+            app_commands.Choice(name="Febrero", value=2),
+            app_commands.Choice(name="Marzo", value=3),
+            app_commands.Choice(name="Abril", value=4),
+            app_commands.Choice(name="Mayo", value=5),
+            app_commands.Choice(name="Junio", value=6),
+            app_commands.Choice(name="Julio", value=7),
+            app_commands.Choice(name="Agosto", value=8),
+            app_commands.Choice(name="Septiembre", value=9),
+            app_commands.Choice(name="Octubre", value=10),
+            app_commands.Choice(name="Noviembre", value=11),
+            app_commands.Choice(name="Diciembre", value=12),
+        ]
+    )
+    async def ver_finanzas(self, interaction: discord.Interaction, divisa: str, mes: int = None, ano: int = None):
         import datetime
         ahora = datetime.datetime.now()
         
@@ -349,7 +404,6 @@ class Tickets(commands.Cog):
         nombres_meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
         nombre_mes_str = nombres_meses[mes_query - 1]
         
-        # Deferir respuesta ya que la base de datos puede tener lag
         await interaction.response.defer(ephemeral=True)
         
         query = """
@@ -369,59 +423,56 @@ class Tickets(commands.Cog):
                 await interaction.followup.send(f"📭 No se encontraron registros de transacciones para **{nombre_mes_str} de {ano_query}**.", ephemeral=True)
                 return
                 
-            # Agrupación y sumatorias
-            totales_generales = {"ARS": {"monto": 0.0, "cantidad": 0}, "USD": {"monto": 0.0, "cantidad": 0}}
-            desglose = {} # concepto -> { 'ARS': {monto, cant}, 'USD': {monto, cant} }
+            # Filtrado en caliente por la divisa elegida
+            total_monto_divisa = 0.0
+            total_cantidad_divisa = 0
+            desglose = {} # concepto -> {monto, cantidad}
             
             for fila in filas:
-                concepto = fila["concepto"] or "No especificado"
                 moneda = fila["moneda"] or "ARS"
+                if moneda != divisa:
+                    continue
+                
+                concepto = fila["concepto"] or "No especificado"
                 cantidad = int(fila["cantidad"])
                 total_monto = float(fila["total_monto"])
                 
-                # Sumar a totales generales
-                totales_generales[moneda]["monto"] += total_monto
-                totales_generales[moneda]["cantidad"] += cantidad
+                total_monto_divisa += total_monto
+                total_cantidad_divisa += cantidad
                 
                 if concepto not in desglose:
-                    desglose[concepto] = {
-                        "ARS": {"monto": 0.0, "cantidad": 0},
-                        "USD": {"monto": 0.0, "cantidad": 0}
-                    }
-                desglose[concepto][moneda]["monto"] += total_monto
-                desglose[concepto][moneda]["cantidad"] += cantidad
+                    desglose[concepto] = {"monto": 0.0, "cantidad": 0}
+                desglose[concepto]["monto"] += total_monto
+                desglose[concepto]["cantidad"] += cantidad
                 
+            if total_cantidad_divisa == 0:
+                await interaction.followup.send(f"📭 No se encontraron transacciones en **{divisa}** para **{nombre_mes_str} de {ano_query}**.", ephemeral=True)
+                return
+
+            # Configuración estética por divisa
+            bandera = "🇦🇷" if divisa == "ARS" else "🌍"
+            nombre_moneda = "Pesos (ARS)" if divisa == "ARS" else "Dólares (USD)"
+            color_embed = 0x1DB954 if divisa == "ARS" else 0x5865F2
+            
             # Construir Embed
             embed = discord.Embed(
-                title=f"📊 Reporte Financiero - {nombre_mes_str} {ano_query}",
-                color=0x2B2D31, # Color oscuro de Discord
+                title=f"📊 Reporte Financiero ({nombre_moneda}) - {nombre_mes_str} {ano_query}",
+                color=color_embed,
                 timestamp=interaction.created_at
             )
             
             # Campo resumen general
             resumen_value = (
-                f"• 🇦🇷 **Total Pesos**: `${totales_generales['ARS']['monto']:,.2f} ARS` "
-                f"({totales_generales['ARS']['cantidad']} transacciones)\n"
-                f"• 🌍 **Total Dólares**: `${totales_generales['USD']['monto']:,.2f} USD` "
-                f"({totales_generales['USD']['cantidad']} transacciones)"
+                f"• {bandera} **Total {nombre_moneda}**: `${total_monto_divisa:,.2f} {divisa}` "
+                f"({total_cantidad_divisa} transacciones)"
             )
             embed.add_field(name="💰 Resumen de Ingresos", value=resumen_value, inline=False)
             
             # Campo desglose por concepto
             desglose_value = ""
-            # Ordenamos los conceptos alfabéticamente
             for conc in sorted(desglose.keys()):
                 datos_conc = desglose[conc]
-                ars_info = ""
-                usd_info = ""
-                
-                if datos_conc["ARS"]["cantidad"] > 0:
-                    ars_info = f"`{datos_conc['ARS']['cantidad']} en ARS` (`${datos_conc['ARS']['monto']:,.2f}`)"
-                if datos_conc["USD"]["cantidad"] > 0:
-                    usd_info = f"`{datos_conc['USD']['cantidad']} en USD` (`${datos_conc['USD']['monto']:,.2f}`)"
-                
-                detalles = " | ".join(filter(None, [ars_info, usd_info]))
-                desglose_value += f"• **{conc}**: {detalles}\n"
+                desglose_value += f"• **{conc}**: `{datos_conc['cantidad']} en {divisa}` (`${datos_conc['monto']:,.2f}`)\n"
                 
             if not desglose_value:
                 desglose_value = "No hay desglose disponible."

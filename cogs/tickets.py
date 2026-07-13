@@ -184,10 +184,23 @@ class Tickets(commands.Cog):
                 embed.add_field(
                     name="📋 PROCESO DE PRE-COMPRA", 
                     value=(
-                        "1. **Enviá el nombre y redes sociales/enlace** de la modelo que querés sugerir.\n"
+                        "1. **Enviá el nombre y redes/enlace** de la modelo que querés sugerir.\n"
                         "2. **Aguardá en este chat** a que la administración verifique la disponibilidad de su contenido.\n"
-                        "3. **Una vez confirmado por el Administrador**, realizá el pago ($3000 ARS / $3 USD) o procedé con el canje si tenés los puntos."
+                        "3. **Una vez confirmado por el Administrador**, podés realizar el pago usando los datos abajo y subir el comprobante en este chat."
                     ), 
+                    inline=False
+                )
+                embed.add_field(
+                    name="💰 DATOS DE PAGO (Pagar ÚNICAMENTE tras confirmación)", 
+                    value=(
+                        "⚠️ **NO PAGUES ANTES DE LA CONFIRMACIÓN**\n\n"
+                        "🇦🇷 **Pesos (ARS)**:\n"
+                        "• **Alias**: LENGUA.LUJOSA.TELAR\n"
+                        "• **CBU**: 3840200500000026286680\n"
+                        "• **Titular**: Fabrizio Giovanni Cocca Ducay\n\n"
+                        "🌍 **Internacional (USD - PayPal)**:\n"
+                        "• **Correo**: sesarjavier28@gmail.com (Enviar monto exacto de $3 USD)"
+                    ),
                     inline=False
                 )
                 embed.add_field(
@@ -773,15 +786,10 @@ HISTORIAL DE CONVERSACIÓN RECIENTE:
 {contexto_previo}
 
 REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
-1. PROTOCOLO DE PRE-COMPRA: Explícale al usuario que primero debe enviar el nombre o red social/URL de la modelo para verificar si su contenido está disponible. Tito Calderón comprobará esto a la brevedad.
+1. PROTOCOLO DE PRE-COMPRA: Explica que primero el usuario debe enviar el nombre o red social/URL de la modelo para verificar si su contenido está disponible. Tito Calderón comprobará esto a la brevedad.
 2. COMPROMISO DE COMPRA (100%): Si el usuario duda o consulta, recuérdale con educación que sugerir una modelo e iniciar la búsqueda activa un compromiso de pago obligatorio si confirmamos que está disponible. Si decide no pagar tras la confirmación, se le aplicará un aviso (warn) o baneo por abuso de soporte.
-3. REGLA DE PAGOS (CRÍTICA): NO proporciones datos bancarios (CBU, Alias, PayPal) ni pidas comprobantes en la etapa inicial. SOLO podrás dar los datos de cobro si ves en el HISTORIAL de conversación que un Administrador o Tito Calderón ya confirmó explícitamente que la modelo está disponible (ej. diciendo "confirmado", "está disponible", "puedes proceder al pago", etc.).
-4. DATOS DE COBRO (Proporcionar ÚNICAMENTE tras confirmación de disponibilidad en el historial):
-   - Costo Fijo: $3000 ARS o $3 USD.
-   - Alias: LENGUA.LUJOSA.TELAR
-   - CBU: 3840200500000026286680
-   - PayPal (USD): sesarjavier28@gmail.com
-   - Titular de la cuenta bancaria: Fabrizio Giovanni Cocca Ducay (Tito Calderón es solo el nombre de la comunidad).
+3. REGLA DE PAGOS (CRÍTICA): NO incites al usuario a realizar el pago ni a pasar comprobantes en la etapa inicial. Si preguntan cómo pagar o piden los datos, aclárales que los datos de pago (Alias, CBU, PayPal) ya figuran arriba en el mensaje de bienvenida de este ticket, pero que NO deben pagar hasta que confirmemos la disponibilidad.
+4. CONFIRMACIÓN OPERATIVA: Solo indícales que ya pueden proceder con el pago (usando los datos que figuran en el mensaje de bienvenida de arriba) si ves en el HISTORIAL de conversación que un Administrador o Tito Calderón ya confirmó explícitamente que la modelo está disponible (ej. diciendo "confirmado", "está disponible", "puedes proceder al pago", etc.).
 5. REGLA DE BUMPS: Si el usuario menciona que quiere hacer un canje de puntos de su billetera virtual (30 puntos), recuérdale amablemente que debe escribir explícitamente "Quiero canjear mis puntos" para que el bot dé aviso a administración.
 6. RESPUESTAS CORTAS: Máximo 1 o 2 párrafos cortos (no más de 60 palabras). Sé directo y al grano.
 7. ASINCRONÍA DE FOTOS: Si el usuario dice "ahí pasé la foto", "ya pagué" o "mandé el comprobante", responde: "¡Perfecto! El sistema de auditoría lo está analizando en este preciso momento." NO vuelvas a pedir la foto.

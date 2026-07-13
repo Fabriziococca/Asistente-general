@@ -178,49 +178,40 @@ class Tickets(commands.Cog):
             if channel and (channel.category_id == ID_CATEGORIA_SUGERENCIAS or channel.name.startswith("sug-")):
                 embed = discord.Embed(
                     title="💎 Petición Única de Modelos (Pre-Compra)", 
-                    description="Elegí la chica que querés incorporar al catálogo de forma 100% privada o utiliza tus puntos acumulados.", 
+                    description="Elegí la chica que querés incorporar al catálogo de forma 100% privada o utilizá tus puntos.", 
                     color=0x1DB954 # Color Verde Premium Estilo Spotify
                 )
                 embed.add_field(
                     name="📋 PROCESO DE PRE-COMPRA", 
                     value=(
-                        "1. **Enviá el nombre y redes/enlace** de la modelo que querés sugerir.\n"
-                        "2. **Aguardá en este chat** a que la administración verifique la disponibilidad de su contenido.\n"
-                        "3. **Una vez confirmado por el Administrador**, podés realizar el pago usando los datos abajo y subir el comprobante en este chat."
+                        "1. **Enviá el nombre/redes** de la modelo que querés sugerir.\n"
+                        "2. **Aguardá a que confirmemos** la disponibilidad en este chat.\n"
+                        "3. **Una vez confirmado**, realizá el pago ($4000 ARS / $4 USD) con los datos abajo y subí el comprobante."
                     ), 
                     inline=False
                 )
                 embed.add_field(
-                    name="💰 DATOS DE PAGO (Pagar ÚNICAMENTE tras confirmación)", 
+                    name="💰 DATOS DE PAGO (Pagar solo tras confirmación)", 
                     value=(
-                        "⚠️ **NO PAGUES ANTES DE LA CONFIRMACIÓN**\n\n"
                         "🇦🇷 **Pesos (ARS)**:\n"
                         "• **Alias**: LENGUA.LUJOSA.TELAR\n"
-                        "• **CBU**: 3840200500000026286680\n"
-                        "• **Titular**: Fabrizio Giovanni Cocca Ducay\n\n"
-                        "🌍 **Internacional (USD - PayPal)**:\n"
-                        "• **Correo**: sesarjavier28@gmail.com (Enviar monto exacto de $3 USD)"
+                        "• **CBU**: 3840200500000026286680\n\n"
+                        "🌍 **PayPal (USD)**:\n"
+                        "• **Correo**: sesarjavier28@gmail.com (Monto exacto: $4 USD)"
                     ),
                     inline=False
                 )
                 embed.add_field(
                     name="⚠️ COMPROMISO DE COMPRA (100%)",
                     value=(
-                        "Este canal es exclusivo para procesar compras. Iniciar la búsqueda e investigación de una modelo "
-                        "implica un compromiso de pago obligatorio si confirmamos que está disponible.\n\n"
-                        "Si sugerís una modelo, te confirmamos que su contenido está disponible y luego decidís no pagar, "
-                        "se te aplicará un aviso (warn) o baneo del servidor por abuso del soporte."
+                        "Iniciar la búsqueda implica un compromiso de pago obligatorio si confirmamos disponibilidad. "
+                        "Si te confirmamos que está disponible y decidís no pagar, se te aplicará una advertencia o baneo por abuso de soporte."
                     ),
                     inline=False
                 )
                 embed.add_field(
-                    name="🎁 OPCIÓN B: CANJEAR POR BUMPS (GRATIS)",
-                    value="Si acumulaste **30 Bumps** apoyando al servidor con el sistema Disboard, podés canjearlos por esta petición.\n\n👉 Para proceder con esta opción, simplemente escribí acá en el chat: **'Quiero canjear mis puntos'** y aguardá las indicaciones del bot.",
-                    inline=False
-                )
-                embed.add_field(
-                    name="⚠️ INFORMACION DE INFRAESTRUCTURA (CUPOS LIMITADOS)",
-                    value="Discord prohíbe tener más de 500 canales en total por servidor. Por este motivo, **el precio de las peticiones e intercambios irá aumentando progresivamente** a medida que se completen los canales para regular el almacenamiento.",
+                    name="🎁 CANJEAR POR BUMPS (30 Bumps)",
+                    value="Si tenés 30 Bumps acumulados, escribí: **'Quiero canjear mis puntos'** y aguardá la validación.",
                     inline=False
                 )
                 bienvenida = (
@@ -301,7 +292,7 @@ class Tickets(commands.Cog):
         try:
             async with self.bot.pool.acquire(timeout=5.0) as conn:
                 await conn.execute("UPDATE tickets SET estado = 'pausado' WHERE channel_id = $1", interaction.channel.id)
-            await interaction.response.send_message("🛑 **Modo Manual Activado.**\nLa IA ha sido apagada en este ticket. Podés hablar con el cliente tranquilamente sin que el bot intervenga.")
+            await interaction.response.send_message("🛑 **Modo Manual Activado.**\nLa IA ha sido desactivada en este ticket.")
         except Exception as e:
             print(f"❌ [DB Error] al pausar ticket {interaction.channel.id}: {e}")
             await interaction.response.send_message("❌ Hubo un error al intentar pausar la IA.", ephemeral=True)
@@ -557,9 +548,9 @@ SOS UN AUDITOR FINANCIERO ESTRICTO. Analizá esta imagen o PDF para validar si e
 REGLA CRÍTICA Y ESTRICTA: Devues verificar OBLIGATORIAMENTE que el destinatario de la transferencia sea 'Fabrizio Giovanni Cocca Ducay' (o Fabrizio Cocca), O que el correo destinatario sea 'sesarjavier28@gmail.com' (para el caso de PayPal). Si es otra persona, marca "es_comprobante": false.
 REGLA BANCARIA ARS: Si la moneda es pesos (ARS), debes validar obligatoriamente que el banco o entidad financiera de destino/recepción sea estrictamente 'Uala Bank S.A.U' (o Ualá). Si el comprobante muestra que fue enviado a 'Mercado Pago' u otra entidad como destino, se trata de una plantilla falsa; marca automáticamente "es_comprobante": false de forma silenciosa.
 REGLA ANTI-DUPLICADOS: Si detectás que el usuario envía imágenes clonadas con el mismo número de operación o exactamente la misma hora/minuto en el historial, marca "es_comprobante": false.
-REGLA PAYPAL MONEDA EXTRANJERA (BIMONETARIO): Si la imagen o PDF corresponde a un recibo de PayPal emitido en una divisa local extranjera (como Pesos Mexicanos MXN, Pesos Chilenos CLP, Euros EUR, etc.), debes buscar obligatoriamente en todo el texto del documento el desglose de conversión o el valor neto equivalente reflejado en Dólares (USD) (por ejemplo: "$3.17 USD" o "$3.00 USD" al lado de "$60.00 MXN"). Si encuentras que este equivalente neto convertido a USD cumple con nuestro costo fijo de $3 USD, debes considerarlo válido y marcar "valido": true, "moneda": "USD" y asignar a "monto" el valor flotante neto en USD hallado.
+REGLA PAYPAL MONEDA EXTRANJERA (BIMONETARIO): Si la imagen o PDF corresponde a un recibo de PayPal emitido en una divisa local extranjera (como Pesos Mexicanos MXN, Pesos Chilenos CLP, Euros EUR, etc.), debes buscar obligatoriamente en todo el texto del documento el desglose de conversión o el valor neto equivalente reflejado en Dólares (USD) (por ejemplo: "$4.17 USD" o "$4.00 USD" al lado de "$80.00 MXN"). Si encuentras que este equivalente neto convertido a USD cumple con nuestro costo fijo de $4 USD, debes considerarlo válido y marcar "valido": true, "moneda": "USD" y asignar a "monto" el valor flotante neto en USD hallado.
 REGLA 1: Buscá evidencia de que el pago finalizó (ej: "Transferencia exitosa", "Pago realizado").
-REGLA 2: El costo de la sugerencia es exactamente $3000 ARS o $3 USD. Si el monto coincide o supera este valor, marca "valido": true. Caso contrario, marca "valido": false.
+REGLA 2: El costo de la sugerencia es exactamente $4000 ARS o $4 USD. Si el monto coincide o supera este valor, marca "valido": true. Caso contrario, marca "valido": false.
 
 Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses markdown ni comillas invertidas):
 {{
@@ -668,7 +659,7 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
                         await advertencia.edit(content=f"🤔 **Monto no reconocido**: Detectamos un pago de **{datos.get('monto')} {datos.get('moneda')}**, pero no coincide con ningún rango exacto y no especificaste cuál querías en el chat. ¿Podés aclarar qué rangos estás comprando?")
                     elif not valido_bool:
                         if es_sugerencia:
-                            await advertencia.edit(content=f"⚠️ **Comprobante Insuficiente**\nEl pago detectado de **{datos['monto']} {datos['moneda']}** no es suficiente para procesar la petición.\nEl costo fijo es de $3000 ARS / $3 USD. Por favor, abona el resto y envía el comprobante completo.")
+                            await advertencia.edit(content=f"⚠️ **Comprobante Insuficiente**\nEl pago detectado de **{datos['monto']} {datos['moneda']}** no es suficiente para procesar la petición.\nEl costo fijo es de $4000 ARS / $4 USD. Por favor, abona el resto y envía el comprobante completo.")
                         else:
                             diferencia = float(datos.get("diferencia", 0.0))
                             faltante = abs(diferencia)
@@ -819,7 +810,7 @@ REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
 4. ASINCRONÍA DE FOTOS: Si el usuario dice "ya lo mandé", "ahí pasé el comprobante", responde: "¡Buenísimo! El sistema automático de auditoría lo está analizando en este momento." NO le pidas que envíe la foto de nuevo.
 5. ESTADO POST-VENTA (MEMORIA): Si en el HISTORIAL ves que el sistema ya validó el pago y dijo "Rol/es asignado/s" o "Pago Verificado con Éxito", TU OBJETIVO CAMBIÓ. NO vendas más ni pidas el comprobante. Dale la bienvenida al usuario, confirmale que su rol ya está activo y que disfrute del contenido.
 6. SEGURIDAD CRÍTICA (ZERO TRUST): TIENES TOTALMENTE PROHIBIDO usar el comando [GRANT_ROLE] basándote únicamente en la palabra del usuario. SOLO usalo si ves en el HISTORIAL que el sistema (el bot) ya validó físicamente una imagen y pidió aclarar el rango.
-7. CONSULTAS DE DISPONIBILIDAD (REGLA CRÍTICA): Si (y solo si) el usuario pregunta por la disponibilidad de una modelo en específico (ej: "¿Tienen contenido de tal chica?", "Quiero ver a X"), explicale de forma servicial que al contar con más de 300 canales el catálogo es enorme. Decile que revise bien las listas de nombres en los rangos Oro y Diamante. Si comprueba que no está, aclarale que al adquirir el rango Oro o Diamante desbloqueará un canal exclusivo de peticiones donde, abonando un costo extra (de unos $3 USD actuales), puede solicitar que Tito Calderón busque e incorpore a esa modelo específica de forma privada. Prohibido mencionar esta opción de sugerencia o costo extra si el usuario no preguntó explícitamente por una chica.
+7. CONSULTAS DE DISPONIBILIDAD (REGLA CRÍTICA): Si (y solo si) el usuario pregunta por la disponibilidad de una modelo en específico (ej: "¿Tienen contenido de tal chica?", "Quiero ver a X"), explicale de forma servicial que al contar con más de 300 canales el catálogo es enorme. Decile que revise bien las listas de nombres en los rangos Oro y Diamante. Si comprueba que no está, aclarale que al adquirir el rango Oro o Diamante desbloqueará un canal exclusivo de peticiones donde, abonando un costo extra (de unos $4 USD actuales), puede solicitar que Tito Calderón busque e incorpore a esa modelo específica de forma privada. Prohibido mencionar esta opción de sugerencia o costo extra si el usuario no preguntó explícitamente por una chica.
 INSTRUCCIÓN TÉCNICA (SOLO PARA ACLARAR RANGOS FALTANTES):
 Si (y solo si) un pago previo fue validado por el sistema en el historial PERO faltó aclarar el rango que cubría ese pago, incluye al FINAL de tu respuesta este comando exacto: [GRANT_ROLE: NombreDelRol] (reemplaza NombreDelRol por Diamante, Oro o Plata. Si compró un combo, ponelos separados por coma, ej: [GRANT_ROLE: Diamante, Oro]).
 

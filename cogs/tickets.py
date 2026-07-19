@@ -68,7 +68,7 @@ class Tickets(commands.Cog):
                 hablo BOOLEAN DEFAULT FALSE
             )
         """
-        # Crear tabla de pagos alineada estrictamente al esquema real de tu NeonDB (image_34f7af.png)
+        # Crear tabla de pagos alineada estrictamente al esquema real de tu NeonDB
         query_pagos = """
             CREATE TABLE IF NOT EXISTS pagos (
                 pago_id SERIAL PRIMARY KEY,
@@ -76,7 +76,8 @@ class Tickets(commands.Cog):
                 ticket_id BIGINT,
                 monto NUMERIC(10, 2),
                 moneda TEXT,
-                concepto TEXT
+                concepto TEXT,
+                metodo_pago TEXT DEFAULT 'paypal'
             )
         """
         try:
@@ -87,7 +88,12 @@ class Tickets(commands.Cog):
                 try:
                     await conn.execute("ALTER TABLE tickets ADD COLUMN hablo BOOLEAN DEFAULT FALSE")
                 except asyncpg.PostgresError:
-                    pass # Si tira error es porque la columna ya existe, no pasa nada
+                    pass
+                # Añadimos la columna 'metodo_pago' si es que la tabla ya existía de antes
+                try:
+                    await conn.execute("ALTER TABLE pagos ADD COLUMN metodo_pago TEXT DEFAULT 'paypal'")
+                except asyncpg.PostgresError:
+                    pass
             print("✅ [Tickets & Pagos] Tablas verificadas/creadas exitosamente.")
         except Exception as e:
             print(f"❌ [DB Error] Error al crear las tablas: {e}")
@@ -407,11 +413,11 @@ class Tickets(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         query = """
-            SELECT concepto, moneda, monto, COUNT(*) as cantidad, SUM(monto) as total_monto
+            SELECT concepto, moneda, monto, COALESCE(metodo_pago, 'paypal') as metodo_pago, COUNT(*) as cantidad
             FROM pagos
             WHERE CAST(EXTRACT(MONTH FROM fecha_pago) AS INTEGER) = $1 
               AND CAST(EXTRACT(YEAR FROM fecha_pago) AS INTEGER) = $2
-            GROUP BY concepto, moneda, monto
+            GROUP BY concepto, moneda, monto, metodo_pago
             ORDER BY concepto, moneda
         """
         
@@ -423,7 +429,7 @@ class Tickets(commands.Cog):
                 await interaction.followup.send(f"📭 No se encontraron registros de transacciones para **{nombre_mes_str} de {ano_query}**.", ephemeral=True)
                 return
                 
-            # Filtrado en caliente por la divisa elegida
+            # Filtrado y cálculo de comisiones en caliente por la divisa elegida
             total_monto_divisa = 0.0
             total_cantidad_divisa = 0
             desglose = {} # concepto -> {monto, cantidad}
@@ -435,14 +441,32 @@ class Tickets(commands.Cog):
                 
                 concepto = fila["concepto"] or "No especificado"
                 cantidad = int(fila["cantidad"])
-                total_monto = float(fila["total_monto"])
+                monto_bruto = float(fila["monto"])
+                metodo = (fila["metodo_pago"] or "paypal").lower()
                 
-                total_monto_divisa += total_monto
+                # Calcular comisiones si la divisa es USD y es PayPal
+                if moneda == "USD" and metodo == "paypal":
+                    # 1. Comisión de recepción de PayPal: 5.4% + $0.30 USD fijos
+                    comision_paypal = round((monto_bruto * 0.054) + 0.30, 2)
+                    neto_1 = max(0.0, monto_bruto - comision_paypal)
+                    
+                    # 2. Retiro/intermediación a Argentina (ej. Saldo): descuento de 3.5%
+                    neto_2 = neto_1 * 0.965
+                    
+                    # 3. Lemon Cash landing fee: descuento de 1%
+                    neto_3 = neto_2 * 0.99
+                    
+                    monto_neto = round(neto_3, 2)
+                else:
+                    # En pesos o Binance, se mantiene el 100% neto
+                    monto_neto = monto_bruto
+                
+                total_monto_divisa += monto_neto * cantidad
                 total_cantidad_divisa += cantidad
                 
                 if concepto not in desglose:
                     desglose[concepto] = {"monto": 0.0, "cantidad": 0}
-                desglose[concepto]["monto"] += total_monto
+                desglose[concepto]["monto"] += monto_neto * cantidad
                 desglose[concepto]["cantidad"] += cantidad
                 
             if total_cantidad_divisa == 0:
@@ -602,6 +626,7 @@ REGLA ANTI-DUPLICADOS: Si detectás que el usuario envía imágenes clonadas con
 REGLA PAYPAL MONEDA EXTRANJERA (BIMONETARIO): Si la imagen o PDF corresponde a un recibo de PayPal emitido en una divisa local extranjera (como Pesos Mexicanos MXN, Pesos Chilenos CLP, Euros EUR, etc.), debes buscar obligatoriamente en todo el texto del documento el desglose de conversión o el valor neto equivalente reflejado en Dólares (USD) (por ejemplo: "$4.17 USD" o "$4.00 USD" al lado de "$80.00 MXN"). Si encuentras que este equivalente neto convertido a USD cumple con nuestro costo fijo de $4 USD, debes considerarlo válido y marcar "valido": true, "moneda": "USD" y asignar a "monto" el valor flotante neto en USD hallado.
 REGLA 1: Buscá evidencia de que el pago finalizó (ej: "Transferencia exitosa", "Pago realizado").
 REGLA 2: El costo de la sugerencia es exactamente $4000 ARS o $4 USD. Si el monto coincide o supera este valor, marca "valido": true. Caso contrario, marca "valido": false.
+REGLA DETECCIÓN PLATAFORMA (metodo_pago): Debes identificar qué plataforma de cobro se usó en el comprobante. Devuelve en el campo "metodo_pago" estrictamente la cadena "paypal", "binance", "uala" o "mercadopago" según corresponda de forma de identificarlo analizando los textos o logos. Si no se puede identificar o es una transferencia de pesos normal, devuelve "otro".
 
 Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses markdown ni comillas invertidas):
 {{
@@ -611,7 +636,8 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
   "rol_detectado": "Sugerencia",
   "valido": true_o_false,
   "diferencia": float,
-  "necesita_preguntar": false
+  "necesita_preguntar": false,
+  "metodo_pago": "paypal_o_binance_o_uala_o_mercadopago_o_otro"
 }}
 """
             else:
@@ -646,6 +672,7 @@ REGLA 5: TUS DATOS DE COBRO (NUNCA INVENTES OTROS):
 REGLA 6: RESPUESTAS CORTAS: Respondé SIEMPRE a lo que se te pregunta y pide. Sé directo, servicial y al grano. No uses lenguaje robótico ni des discursos largos.
 REGLA 7: DURACIÓN DE LOS RANGOS: Los rangos son PERMANENTES y de por vida. NUNCA expiran ni requieren renovación.
 REGLA 8 (FORMATO DE COMBINACIONES): En el JSON, para la key "rol_detectado", si el usuario pagó por un combo, DEBES separar los roles estrictamente por comas (Ejemplo: "Diamante, Oro", "Diamante, Plata", "Oro, Plata" o "Todos"). NUNCA uses "y" ni "+". Si es uno solo, pones el nombre solo.
+REGLA DETECCIÓN PLATAFORMA (metodo_pago): Debes identificar qué plataforma de cobro se usó en el comprobante. Devuelve en el campo "metodo_pago" estrictamente la cadena "paypal", "binance", "uala" o "mercadopago" según corresponda analizando los textos o logos. Si no se puede identificar o es una transferencia de pesos normal, devuelve "otro".
 
 Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses markdown ni comillas invertidas):
 {{
@@ -655,7 +682,8 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
   "rol_detectado": "Diamante, Oro, Plata, Todos, o combinaciones con coma",
   "valido": true_o_false,
   "diferencia": float,
-  "necesita_preguntar": true_o_false
+  "necesita_preguntar": true_o_false,
+  "metodo_pago": "paypal_o_binance_o_uala_o_mercadopago_o_otro"
 }}
 """
 
@@ -730,10 +758,11 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
                 
                 # Enlace estructurado a pagos real de NeonDB
                 try:
+                    metodo = datos.get("metodo_pago", "paypal").lower()
                     async with self.bot.pool.acquire(timeout=5.0) as conn:
                         await conn.execute(
-                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto) VALUES ($1, $2, $3, $4, 'Sugerencia')",
-                            message.author.id, message.channel.id, float(datos.get('monto', 0)), datos.get('moneda', 'ARS')
+                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago) VALUES ($1, $2, $3, $4, 'Sugerencia', $5)",
+                            message.author.id, message.channel.id, float(datos.get('monto', 0)), datos.get('moneda', 'ARS'), metodo
                         )
                 except Exception as e:
                     print(f"❌ [DB Error] No se pudo registrar el pago en la tabla 'pagos': {e}")
@@ -772,12 +801,13 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
                 
                 # Enlace estructurado a pagos real de NeonDB
                 try:
+                    metodo = datos.get("metodo_pago", "paypal").lower()
                     async with self.bot.pool.acquire(timeout=5.0) as conn:
                         monto_num = float(datos.get('monto', 0))
                         moneda_str = datos.get('moneda', 'ARS')
                         await conn.execute(
-                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto) VALUES ($1, $2, $3, $4, $5)",
-                            message.author.id, message.channel.id, monto_num, moneda_str, rol
+                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago) VALUES ($1, $2, $3, $4, $5, $6)",
+                            message.author.id, message.channel.id, monto_num, moneda_str, rol, metodo
                         )
                 except Exception as e:
                     print(f"❌ [DB Error] No se pudo registrar el pago en la tabla 'pagos': {e}")
@@ -907,7 +937,7 @@ Consulta actual del usuario: "{message.content}"
                                         for r_name in nombres_roles_asignados:
                                             monto_estimado = ROLES[r_name]["ars"] 
                                             await conn.execute(
-                                                "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto) VALUES ($1, $2, $3, $4, $5)",
+                                                "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago) VALUES ($1, $2, $3, $4, $5, 'otro')",
                                                 message.author.id, message.channel.id, float(monto_estimado), "ARS", r_name
                                             )
                                 except Exception as e:

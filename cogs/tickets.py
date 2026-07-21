@@ -147,116 +147,143 @@ class Tickets(commands.Cog):
         # Si salimos de ambos bucles, las dos llaves consumieron sus cuotas diarias o colapsaron por completo
         raise Exception("🚨 [EXCEPCIÓN CRÍTICA FINAL] Ambas API Keys agotaron de manera演 consecutiva el pool de 5 modelos funcionales.")
 
+    async def _procesar_bienvenida_y_registro(self, channel: discord.TextChannel):
+        """Registra el ticket en la DB de forma garantizada y envía la bienvenida si aún no fue enviada."""
+        if not channel:
+            return
+
+        es_sugerencia = (getattr(channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS or (hasattr(channel, 'name') and channel.name.startswith("sug-")))
+        
+        # Detectar el usuario en las overwrites
+        user_id = 0
+        if hasattr(channel, 'overwrites'):
+            for target in channel.overwrites:
+                if isinstance(target, discord.Member) and not target.bot:
+                    user_id = target.id
+                    break
+
+        # Guardado garantizado en DB
+        try:
+            async with self.bot.pool.acquire(timeout=10.0) as conn:
+                if user_id != 0:
+                    await conn.execute("INSERT INTO usuarios (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
+                await conn.execute("""
+                    INSERT INTO tickets (channel_id, user_id, estado, ultimo_mensaje, hablo)
+                    VALUES ($1, $2, 'abierto', CURRENT_TIMESTAMP, FALSE)
+                    ON CONFLICT (channel_id) DO NOTHING
+                """, channel.id, user_id)
+        except Exception as e:
+            print(f"❌ [DB Error] No se pudo registrar ticket inicial {channel.id}: {e}")
+
+        # Verificar si el bot ya envió el mensaje de bienvenida en este canal
+        try:
+            ya_envio_bienvenida = False
+            async for m in channel.history(limit=10):
+                if m.author == self.bot.user and m.embeds and ("Petición Única" in m.embeds[0].title or "Zona de Compras" in m.embeds[0].title):
+                    ya_envio_bienvenida = True
+                    break
+            
+            if not ya_envio_bienvenida:
+                if es_sugerencia:
+                    embed = discord.Embed(
+                        title="💎 Petición Única de Modelos (Pre-Compra)", 
+                        description="Elegí la chica que querés incorporar al catálogo de forma 100% privada o utilizá tus puntos.", 
+                        color=0x1DB954 # Color Verde Premium Estilo Spotify
+                    )
+                    embed.add_field(
+                        name="📋 PROCESO DE PRE-COMPRA", 
+                        value=(
+                            "1. **Enviá el nombre/redes** de la modelo que querés sugerir.\n"
+                            "2. **Aguardá a que confirmemos** la disponibilidad en este chat.\n"
+                            "3. **Una vez confirmado**, realizá el pago ($4000 ARS / $4 USD) con los datos abajo y subí el comprobante."
+                        ), 
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="💰 DATOS DE PAGO (Pagar solo tras confirmación)", 
+                        value=(
+                            "🇦🇷 **Pesos (ARS)**:\n"
+                            "• **Alias**: LENGUA.LUJOSA.TELAR\n"
+                            "• **CBU**: 3840200500000026286680\n\n"
+                            "🌍 **PayPal (USD)**:\n"
+                            "• **Correo**: sesarjavier28@gmail.com (Monto exacto: $4 USD)"
+                        ),
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="⚠️ COMPROMISO DE COMPRA (100%)",
+                        value=(
+                            "Iniciar la búsqueda implica un compromiso de pago obligatorio si confirmamos disponibilidad. "
+                            "Si te confirmamos que está disponible y decidís no pagar, se te aplicará una advertencia o baneo por abuso de soporte."
+                        ),
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="🎁 CANJEAR POR BUMPS (30 Bumps)",
+                        value="Si tenés 30 Bumps acumulados, escribí: **'Quiero canjear mis puntos'** y aguardá la validación.",
+                        inline=False
+                    )
+                    bienvenida = (
+                        "¡Hola! Soy tu asistente automatizado para peticiones exclusivas. 🤖\n"
+                        "Estoy acá para darte soporte y procesar tu solicitud bajo estricto anonimato.\n\n"
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="🛒 Zona de Compras", 
+                        description="Elegí tu rango y mirá los datos de pago abajo.", 
+                        color=0x2B2D31 # Color oscuro de Discord
+                    )
+                    embed.add_field(
+                        name="📉 LISTA DE PRECIOS", 
+                        value="💎 Rango Diamante: 🇦🇷 Argentina: $4700 ARS 🌍 Internacional: $4,5 USD\n🥇 Rango Oro: 🇦🇷 Argentina: $4200 ARS 🌍 Internacional: $4 USD\n🥈 Rango Plata: 🇦🇷 Argentina: $2200 ARS 🌍 Internacional: $2 USD", 
+                        inline=False
+                    )
+                    embed.add_field(name="Alias:", value="LENGUA.LUJOSA.TELAR", inline=False)
+                    embed.add_field(name="CBU:", value="3840200500000026286680", inline=False)
+                    embed.add_field(
+                        name="🌍 DOLARES (PayPal) Enviar monto exacto a este correo:", 
+                        value="sesarjavier28@gmail.com\n", 
+                        inline=False
+                    )
+                    embed.add_field(
+                        name="✅ ¿Ya pagaste? Seguí estos pasos:", 
+                        value="1. Aclara que rango o rangos estas comprando\n2. Envia el comprobante (Foto o PDF)\n3. El bot entrega el rol correspondiente al instante\n\n❓ Si tenes dudas o problemas, etiqueta a @titocalderon y espera a recibir ayuda\n\n*(Si querés 2 o los 3 rangos juntos, podés transferir el total correspondiente según la combinación elegida.)*", 
+                        inline=False
+                    )
+                    bienvenida = (
+                        "¡Hola! Soy tu asistente de ventas automatizado. 🤖\n"
+                        "Estoy aquí para ayudarte a obtener tu rango de forma rápida.\n\n"
+                    )
+
+                await channel.send(content=bienvenida, embed=embed)
+        except Exception as e:
+            print(f"❌ [Error] al procesar bienvenida en {channel.id}: {e}")
+
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel):
-        """Lanza el mensaje de presentación suavizado y el Embed adaptado según la categoría del ticket."""
+        """Lanza el mensaje de presentación y el Embed adaptado según la categoría del ticket."""
         if isinstance(channel, discord.TextChannel) and (channel.name.startswith("ticket-") or channel.name.startswith("sug-") or channel.category_id == ID_CATEGORIA_SUGERENCIAS):
-            # Delay de seguridad de 10 segundos
+            # Delay de seguridad de 10 segundos para dar tiempo a Ticket Tool de ajustar permisos
             await asyncio.sleep(10.0)
             
-            channel = channel.guild.get_channel(channel.id)
+            refreshed = channel.guild.get_channel(channel.id)
+            if refreshed:
+                channel = refreshed
+                
+            await self._procesar_bienvenida_y_registro(channel)
 
-            # --- REGISTRO INICIAL EN DB (GUARDADO INCONDICIONAL) ---
-            user_id = 0 # Valor 0 por defecto por si Ticket Tool tiene lag
-            if channel:
-                for target in channel.overwrites:
-                    if isinstance(target, discord.Member) and not target.bot:
-                        user_id = target.id
-                        break
-            
-            try:
-                async with self.bot.pool.acquire(timeout=5.0) as conn:
-                    # 1. Guardamos al usuario solo si lo detectamos a tiempo
-                    if user_id != 0:
-                        await conn.execute("INSERT INTO usuarios (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
-                    
-                    # 2. GUARDAMOS EL TICKET SÍ O SÍ (Incluso si user_id es 0)
-                    await conn.execute("""
-                        INSERT INTO tickets (channel_id, user_id, estado, ultimo_mensaje, hablo)
-                        VALUES ($1, $2, 'abierto', CURRENT_TIMESTAMP, FALSE)
-                        ON CONFLICT (channel_id) DO NOTHING
-                    """, channel.id, user_id)
-            except Exception as e:
-                print(f"❌ [DB Error] No se pudo registrar ticket inicial {channel.id}: {e}")
-            # ------------------------------
-            
-            # --- DETECCIÓN E INYECCIÓN DE EMBED BASADO EN CATEGORÍA ---
-            if channel and (channel.category_id == ID_CATEGORIA_SUGERENCIAS or channel.name.startswith("sug-")):
-                embed = discord.Embed(
-                    title="💎 Petición Única de Modelos (Pre-Compra)", 
-                    description="Elegí la chica que querés incorporar al catálogo de forma 100% privada o utilizá tus puntos.", 
-                    color=0x1DB954 # Color Verde Premium Estilo Spotify
-                )
-                embed.add_field(
-                    name="📋 PROCESO DE PRE-COMPRA", 
-                    value=(
-                        "1. **Enviá el nombre/redes** de la modelo que querés sugerir.\n"
-                        "2. **Aguardá a que confirmemos** la disponibilidad en este chat.\n"
-                        "3. **Una vez confirmado**, realizá el pago ($4000 ARS / $4 USD) con los datos abajo y subí el comprobante."
-                    ), 
-                    inline=False
-                )
-                embed.add_field(
-                    name="💰 DATOS DE PAGO (Pagar solo tras confirmación)", 
-                    value=(
-                        "🇦🇷 **Pesos (ARS)**:\n"
-                        "• **Alias**: LENGUA.LUJOSA.TELAR\n"
-                        "• **CBU**: 3840200500000026286680\n\n"
-                        "🌍 **PayPal (USD)**:\n"
-                        "• **Correo**: sesarjavier28@gmail.com (Monto exacto: $4 USD)"
-                    ),
-                    inline=False
-                )
-                embed.add_field(
-                    name="⚠️ COMPROMISO DE COMPRA (100%)",
-                    value=(
-                        "Iniciar la búsqueda implica un compromiso de pago obligatorio si confirmamos disponibilidad. "
-                        "Si te confirmamos que está disponible y decidís no pagar, se te aplicará una advertencia o baneo por abuso de soporte."
-                    ),
-                    inline=False
-                )
-                embed.add_field(
-                    name="🎁 CANJEAR POR BUMPS (30 Bumps)",
-                    value="Si tenés 30 Bumps acumulados, escribí: **'Quiero canjear mis puntos'** y aguardá la validación.",
-                    inline=False
-                )
-                bienvenida = (
-                    "¡Hola! Soy tu asistente automatizado para peticiones exclusivas. 🤖\n"
-                    "Estoy acá para darte soporte y procesar tu solicitud bajo estricto anonimato.\n\n"
-                )
-            else:
-                embed = discord.Embed(
-                    title="🛒 Zona de Compras", 
-                    description="Elegí tu rango y mirá los datos de pago abajo.", 
-                    color=0x2B2D31 # Color oscuro de Discord
-                )
-                embed.add_field(
-                    name="📉 LISTA DE PRECIOS", 
-                    value="💎 Rango Diamante: 🇦🇷 Argentina: $4700 ARS 🌍 Internacional: $4,5 USD\n🥇 Rango Oro: 🇦🇷 Argentina: $4200 ARS 🌍 Internacional: $4 USD\n🥈 Rango Plata: 🇦🇷 Argentina: $2200 ARS 🌍 Internacional: $2 USD", 
-                    inline=False
-                )
-                embed.add_field(name="Alias:", value="LENGUA.LUJOSA.TELAR", inline=False)
-                embed.add_field(name="CBU:", value="3840200500000026286680", inline=False)
-                embed.add_field(
-                    name="🌍 DOLARES (PayPal) Enviar monto exacto a este correo:", 
-                    value="sesarjavier28@gmail.com\n", 
-                    inline=False
-                )
-                embed.add_field(
-                    name="✅ ¿Ya pagaste? Seguí estos pasos:", 
-                    value="1. Aclara que rango o rangos estas comprando\n2. Envia el comprobante (Foto o PDF)\n3. El bot entrega el rol correspondiente al instante\n\n❓ Si tenes dudas o problemas, etiqueta a @titocalderon y espera a recibir ayuda\n\n*(Si querés 2 o los 3 rangos juntos, podés transferir el total correspondiente según la combinación elegida.)*", 
-                    inline=False
-                )
-                bienvenida = (
-                    "¡Hola! Soy tu asistente de ventas automatizado. 🤖\n"
-                    "Estoy aquí para ayudarte a obtener tu rango de forma rápida.\n\n"
-                )
-
-            try:
-                if channel:
-                    await channel.send(content=bienvenida, embed=embed)
-            except Exception as e:
-                print(f"❌ [Error] No se pudo enviar bienvenida en {channel.name}: {e}")
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Barrido de sincronización automática al arrancar para rescatar tickets creados durante desconexiones."""
+        print("🔍 [Sync Ticket Audit] Iniciando escaneo de seguridad en canales de tickets...")
+        for guild in self.bot.guilds:
+            for channel in guild.text_channels:
+                if channel.name.startswith("ticket-") or channel.name.startswith("sug-") or channel.category_id == ID_CATEGORIA_SUGERENCIAS:
+                    try:
+                        await self._procesar_bienvenida_y_registro(channel)
+                    except Exception as e:
+                        print(f"❌ Error en sync de ticket {channel.id}: {e}")
+        print("✅ [Sync Ticket Audit] Escaneo completado. Todos los tickets están sincronizados en NeonDB.")
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
@@ -1059,6 +1086,40 @@ Consulta actual del usuario: "{message.content}"
                         except discord.HTTPException:
                             pass
                     await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel_id)
+                    
+                # 4. Barrido defensivo sobre canales reales de Discord para purgar tickets viejos de > 3hs sin registro
+                for guild in self.bot.guilds:
+                    for channel in guild.text_channels:
+                        es_ticket = channel.name.startswith("ticket-") or channel.name.startswith("sug-") or channel.category_id == ID_CATEGORIA_SUGERENCIAS
+                        if not es_ticket:
+                            continue
+                        
+                        es_sug = (channel.category_id == ID_CATEGORIA_SUGERENCIAS) or channel.name.startswith("sug-")
+                        if es_sug:
+                            continue
+                            
+                        import datetime
+                        edad_horas = (datetime.datetime.now(datetime.timezone.utc) - channel.created_at).total_seconds() / 3600.0
+                        if edad_horas >= 3.0:
+                            hablo_humano = False
+                            try:
+                                async for m in channel.history(limit=20):
+                                    if not m.author.bot:
+                                        hablo_humano = True
+                                        break
+                            except Exception:
+                                pass
+                            
+                            if not hablo_humano or edad_horas >= 24.0:
+                                try:
+                                    await channel.delete(reason="Auto-Close Sweep: Ticket abandonado por más de 3hs sin actividad.")
+                                    print(f"🗑️ [Auto-Close Sweep] Ticket {channel.name} ({channel.id}) eliminado ({edad_horas:.1f}hs).")
+                                except Exception as del_err:
+                                    print(f"❌ Error al borrar ticket en sweep {channel.id}: {del_err}")
+                                try:
+                                    await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel.id)
+                                except Exception:
+                                    pass
                     
         except asyncpg.PostgresError as e:
             print(f"❌ [DB Error] en loop cleanup_tickets: {e}")

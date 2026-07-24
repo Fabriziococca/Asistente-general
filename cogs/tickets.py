@@ -39,13 +39,19 @@ class Tickets(commands.Cog):
         self.mi_id = FABRIZIO_ID # Tu ID de usuario para detección de menciones
         self.fallos_tickets = {} # Memoria RAM para el control defensivo y disyuntor de fallos por canal
         
-        # --- ARQUITECTURA DEFENSIVA: Pool secuencial de 5 modelos funcionales validados ---
+        # NUNCA MODIFICAR A NO SER QUE EL USUARIO LO PIDA
+        # Pool secuencial de 10 modelos funcionales validados para rotación defensiva
         self.model_pool = [
-            "gemini-3.5-flash", 
-            "gemini-3.1-flash-lite", 
-            "gemini-2.5-flash", 
-            "gemini-2.5-flash-lite", 
-            "gemini-flash-latest"
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-flash-lite",
+            "gemma-4-31b-it",
+            "gemma-4-26b-a4b-it",
+            "gemini-flash-latest",
+            "gemini-flash-lite-latest"
         ]
         
         # Setup Multi-API Key para evitar saturación
@@ -106,18 +112,19 @@ class Tickets(commands.Cog):
         self.cleanup_tickets.cancel()
         self.auto_promo_refresh.cancel()
 
+    # NUNCA MODIFICAR A NO SER QUE EL USUARIO LO PIDA
     # --- OMNI-PROTOCOLO SELECCIÓN Y ROTACIÓN HÍBRIDA DE CAPA GRATUITA ---
     async def _generate_content_with_rotation(self, prompt, image_parts=None):
-        """Ejecuta la conmutación de API Keys y salta secuencialmente por el pool de 5 modelos ante errores."""
+        """Ejecuta la conmutación de API Keys y salta secuencialmente por el pool de 10 modelos ante errores."""
         if not self.api_keys:
-            raise Exception("No se encontraron API Keys configuradas en el entorno.")
+            raise Exception("No se encontraron API Keys configuradas en el entorno. Se sugiere configurar facturación comercial o agregar llaves válidas.")
         
         # El sistema probará un ciclo entero por cada API Key disponible en tu pool
         for intento_key in range(len(self.api_keys)):
             llave_actual = self.api_keys[self.current_key_index]
             genai.configure(api_key=llave_actual)
             
-            # Recorremos de forma secuencial el pool de 5 modelos validados para la llave activa
+            # Recorremos de forma secuencial el pool de 10 modelos validados para la llave activa
             for model_name in self.model_pool:
                 try:
                     model = genai.GenerativeModel(model_name)
@@ -135,17 +142,24 @@ class Tickets(commands.Cog):
                     return response.text.strip()
                     
                 except Exception as e:
-                    # Captura la excepción específica de la API sin romper la ejecución del bot de soporte
-                    print(f"⚠️ [Advertencia IA] Fallo con modelo {model_name} usando API Key índice {self.current_key_index}: {e}. Rotando al siguiente modelo funcional...")
-                    continue # Salta al siguiente modelo disponible del pool de 5
+                    # Captura limpia de errores (429 cuota superada, 503 saturación, 404 modelo discontinuado/no encontrado o APIError general)
+                    try:
+                        from google.genai.errors import APIError as GenAI_APIError
+                        es_apierror = isinstance(e, GenAI_APIError)
+                    except ImportError:
+                        es_apierror = isinstance(e, GoogleAPIError)
+                    
+                    error_type = type(e).__name__
+                    print(f"⚠️ [Advertencia IA] ({error_type}) Fallo con modelo '{model_name}' usando API Key índice {self.current_key_index}: {e}. Rotando al siguiente modelo disponible...")
+                    continue # Salta al siguiente modelo disponible del pool de 10
             
-            # Si el bucle de modelos termina sin retornar, significa que los 5 modelos fallaron de corrido para esta Key
+            # Si el bucle de modelos termina sin retornar, la Key actual agotó los 10 modelos
             indice_viejo = self.current_key_index
             self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-            print(f"🔄 [CONMUTACIÓN CRÍTICA] Pool de 5 modelos agotado para API Key índice {indice_viejo}. Saltando a API Key índice {self.current_key_index} para reiniciar ciclo entero...")
+            print(f"🔄 [CONMUTACIÓN CRÍTICA] Pool de 10 modelos agotado para API Key índice {indice_viejo}. Saltando a API Key índice {self.current_key_index} para reiniciar el ciclo completo del pool...")
             
-        # Si salimos de ambos bucles, las dos llaves consumieron sus cuotas diarias o colapsaron por completo
-        raise Exception("🚨 [EXCEPCIÓN CRÍTICA FINAL] Ambas API Keys agotaron de manera演 consecutiva el pool de 5 modelos funcionales.")
+        # Si salimos de ambos bucles, todas las API Keys agotaron de manera consecutiva el pool entero
+        raise Exception("🚨 [EXCEPCIÓN CRÍTICA FINAL] Se agotaron todas las API Keys configuradas tras probar de manera consecutiva el pool completo de 10 modelos funcionales (errores 429/503/404). Se sugiere la configuración de facturación comercial.")
 
     async def _procesar_bienvenida_y_registro(self, channel: discord.TextChannel):
         """Registra el ticket en la DB de forma garantizada y envía la bienvenida si aún no fue enviada."""

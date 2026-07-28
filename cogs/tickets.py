@@ -991,8 +991,8 @@ Consulta actual del usuario: "{message.content}"
         except Exception as e:
             print(f"❌ [IA Support Error]: {e}")
 
-    # Tarea en loop cada 1 hora para limpieza de tickets (Ahorro de NeonDB)
-    @tasks.loop(hours=1)
+    # Tarea en loop cada 2 horas para limpieza de tickets (Optimización extrema de NeonDB)
+    @tasks.loop(hours=2)
     async def cleanup_tickets(self):
         # Completados a las 24hs
         query_completados = """

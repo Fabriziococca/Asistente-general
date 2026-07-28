@@ -30,11 +30,11 @@ class Bot(commands.Bot):
             print("Conectando al pool de base de datos...")
             self.pool = await asyncpg.create_pool(
                 dsn=DATABASE_URL,
-                min_size=1,
+                min_size=0, # Permite reducir a 0 conexiones en inactividad para que NeonDB auto-suspenda (Ahorro de CU-hrs)
                 max_size=10,
                 command_timeout=60.0,
-                timeout=15.0, # Timeout general de conexión
-                max_inactive_connection_lifetime=300.0
+                timeout=20.0, # Margen amplio para auto-despertar de NeonDB (500ms-1s)
+                max_inactive_connection_lifetime=60.0 # Cierra conexiones inactivas tras 60 seg para permitir el sleep de Neon
             )
             
             # Schema: Clave compuesta (user_id, guild_id) para conteo por servidor

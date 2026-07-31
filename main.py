@@ -34,7 +34,7 @@ class Bot(commands.Bot):
                 max_size=10,
                 command_timeout=60.0,
                 timeout=20.0, # Margen amplio para auto-despertar de NeonDB (500ms-1s)
-                max_inactive_connection_lifetime=60.0 # Cierra conexiones inactivas tras 60 seg para permitir el sleep de Neon
+                max_inactive_connection_lifetime=10.0 # Cierra conexiones inactivas tras 10 seg para iniciar el sleep de Neon de inmediato
             )
             
             # Schema: Clave compuesta (user_id, guild_id) para conteo por servidor

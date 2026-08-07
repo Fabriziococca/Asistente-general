@@ -414,18 +414,13 @@ class Tickets(commands.Cog):
             print(f"❌ [DB Error] al anular pago de ticket {target_channel.id}: {e}")
             await interaction.followup.send("❌ Ocurrió un error al intentar anular los pagos en la base de datos.", ephemeral=True)
 
-    @app_commands.command(name="finanzas", description="Muestra el reporte financiero mensual detallado (ARS o USD)")
+    @app_commands.command(name="finanzas", description="Muestra el reporte financiero mensual unificado (Pesos ARS + Dólares USD)")
     @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
-        divisa="La divisa que deseas consultar (ARS para pesos, USD para dólares).",
-        mes="El mes a consultar (1 = Enero, 12 = Diciembre). Por defecto el mes actual.",
-        ano="El año a consultar (ej: 2026). Por defecto el año actual."
+        mes="El mes a consultar. Por defecto el mes actual.",
+        ano="El año a consultar. Por defecto el año actual."
     )
     @app_commands.choices(
-        divisa=[
-            app_commands.Choice(name="Pesos (ARS)", value="ARS"),
-            app_commands.Choice(name="Dólares (USD)", value="USD")
-        ],
         mes=[
             app_commands.Choice(name="Enero", value=1),
             app_commands.Choice(name="Febrero", value=2),
@@ -439,9 +434,17 @@ class Tickets(commands.Cog):
             app_commands.Choice(name="Octubre", value=10),
             app_commands.Choice(name="Noviembre", value=11),
             app_commands.Choice(name="Diciembre", value=12),
+        ],
+        ano=[
+            app_commands.Choice(name="2025", value=2025),
+            app_commands.Choice(name="2026", value=2026),
+            app_commands.Choice(name="2027", value=2027),
+            app_commands.Choice(name="2028", value=2028),
+            app_commands.Choice(name="2029", value=2029),
+            app_commands.Choice(name="2030", value=2030),
         ]
     )
-    async def ver_finanzas(self, interaction: discord.Interaction, divisa: str, mes: int = None, ano: int = None):
+    async def ver_finanzas(self, interaction: discord.Interaction, mes: int = None, ano: int = None):
         import datetime
         ahora = datetime.datetime.now()
         
@@ -470,81 +473,85 @@ class Tickets(commands.Cog):
                 await interaction.followup.send(f"📭 No se encontraron registros de transacciones para **{nombre_mes_str} de {ano_query}**.", ephemeral=True)
                 return
                 
-            # Filtrado y cálculo de comisiones en caliente por la divisa elegida
-            total_monto_divisa = 0.0
-            total_cantidad_divisa = 0
-            desglose = {} # concepto -> {monto, cantidad}
+            # Procesamiento unificado de transacciones (ARS + USD)
+            total_monto_ars = 0.0
+            total_cant_ars = 0
+            desglose_ars = {}
+
+            total_monto_usd = 0.0
+            total_cant_usd = 0
+            desglose_usd = {}
             
             for fila in filas:
-                moneda = fila["moneda"] or "ARS"
-                if moneda != divisa:
-                    continue
-                
+                moneda = (fila["moneda"] or "ARS").upper()
                 concepto = fila["concepto"] or "No especificado"
                 cantidad = int(fila["cantidad"])
                 monto_bruto = float(fila["monto"])
                 metodo = (fila["metodo_pago"] or "paypal").lower()
                 
-                # Calcular comisiones si la divisa es USD y es PayPal
-                if moneda == "USD" and metodo == "paypal":
-                    # 1. Comisión de recepción de PayPal: 5.4% + $0.30 USD fijos
-                    comision_paypal = round((monto_bruto * 0.054) + 0.30, 2)
-                    neto_1 = max(0.0, monto_bruto - comision_paypal)
+                if moneda == "USD":
+                    # Calcular comisiones si es PayPal
+                    if metodo == "paypal":
+                        comision_paypal = round((monto_bruto * 0.054) + 0.30, 2)
+                        neto_1 = max(0.0, monto_bruto - comision_paypal)
+                        neto_2 = neto_1 * 0.965  # Intermediación 3.5%
+                        neto_3 = neto_2 * 0.99   # Lemon 1%
+                        monto_neto = round(neto_3, 2)
+                    else:
+                        monto_neto = monto_bruto
                     
-                    # 2. Retiro/intermediación a Argentina (ej. Saldo): descuento de 3.5%
-                    neto_2 = neto_1 * 0.965
-                    
-                    # 3. Lemon Cash landing fee: descuento de 1%
-                    neto_3 = neto_2 * 0.99
-                    
-                    monto_neto = round(neto_3, 2)
+                    total_monto_usd += monto_neto * cantidad
+                    total_cant_usd += cantidad
+                    if concepto not in desglose_usd:
+                        desglose_usd[concepto] = {"monto": 0.0, "cantidad": 0}
+                    desglose_usd[concepto]["monto"] += monto_neto * cantidad
+                    desglose_usd[concepto]["cantidad"] += cantidad
                 else:
-                    # En pesos o Binance, se mantiene el 100% neto
                     monto_neto = monto_bruto
+                    total_monto_ars += monto_neto * cantidad
+                    total_cant_ars += cantidad
+                    if concepto not in desglose_ars:
+                        desglose_ars[concepto] = {"monto": 0.0, "cantidad": 0}
+                    desglose_ars[concepto]["monto"] += monto_neto * cantidad
+                    desglose_ars[concepto]["cantidad"] += cantidad
                 
-                total_monto_divisa += monto_neto * cantidad
-                total_cantidad_divisa += cantidad
-                
-                if concepto not in desglose:
-                    desglose[concepto] = {"monto": 0.0, "cantidad": 0}
-                desglose[concepto]["monto"] += monto_neto * cantidad
-                desglose[concepto]["cantidad"] += cantidad
-                
-            if total_cantidad_divisa == 0:
-                await interaction.followup.send(f"📭 No se encontraron transacciones en **{divisa}** para **{nombre_mes_str} de {ano_query}**.", ephemeral=True)
+            if total_cant_ars == 0 and total_cant_usd == 0:
+                await interaction.followup.send(f"📭 No se encontraron transacciones para **{nombre_mes_str} de {ano_query}**.", ephemeral=True)
                 return
 
-            # Configuración estética por divisa
-            bandera = "🇦🇷" if divisa == "ARS" else "🌍"
-            nombre_moneda = "Pesos (ARS)" if divisa == "ARS" else "Dólares (USD)"
-            color_embed = 0x1DB954 if divisa == "ARS" else 0x5865F2
-            
-            # Construir Embed
+            # Construir Embed Unificado Estético
             embed = discord.Embed(
-                title=f"📊 Reporte Financiero ({nombre_moneda}) - {nombre_mes_str} {ano_query}",
-                color=color_embed,
+                title=f"📊 Reporte Financiero - {nombre_mes_str} {ano_query}",
+                color=0x1DB954, # Verde Spotify elegante
                 timestamp=interaction.created_at
             )
             
             # Campo resumen general
-            resumen_value = (
-                f"• {bandera} **Total {nombre_moneda}**: `${total_monto_divisa:,.2f} {divisa}` "
-                f"({total_cantidad_divisa} transacciones)"
-            )
-            embed.add_field(name="💰 Resumen de Ingresos", value=resumen_value, inline=False)
-            
-            # Campo desglose por concepto
-            desglose_value = ""
-            for conc in sorted(desglose.keys()):
-                datos_conc = desglose[conc]
-                desglose_value += f"• **{conc}**: `{datos_conc['cantidad']} en {divisa}` (`${datos_conc['monto']:,.2f}`)\n"
+            resumen_lines = []
+            if total_cant_ars > 0:
+                resumen_lines.append(f"• 🇦🇷 **Total Pesos (ARS)**: `${total_monto_ars:,.2f} ARS` (`{total_cant_ars}` transacciones)")
+            if total_cant_usd > 0:
+                resumen_lines.append(f"• 🌍 **Total Dólares (USD Neto)**: `${total_monto_usd:,.2f} USD` (`{total_cant_usd}` transacciones)")
                 
-            if not desglose_value:
-                desglose_value = "No hay desglose disponible."
-                
-            embed.add_field(name="📦 Ventas por Concepto", value=desglose_value, inline=False)
-            embed.set_footer(text="Datos extraídos en tiempo real desde NeonDB")
+            embed.add_field(name="💰 Resumen General de Ingresos", value="\n".join(resumen_lines), inline=False)
             
+            # Campo desglose en Pesos
+            if total_cant_ars > 0:
+                desglose_ars_lines = []
+                for conc in sorted(desglose_ars.keys()):
+                    d = desglose_ars[conc]
+                    desglose_ars_lines.append(f"• **{conc}**: `{d['cantidad']} en ARS` (`${d['monto']:,.2f}`)")
+                embed.add_field(name="🇦🇷 Ventas en Pesos (ARS)", value="\n".join(desglose_ars_lines), inline=False)
+                
+            # Campo desglose en Dólares
+            if total_cant_usd > 0:
+                desglose_usd_lines = []
+                for conc in sorted(desglose_usd.keys()):
+                    d = desglose_usd[conc]
+                    desglose_usd_lines.append(f"• **{conc}**: `{d['cantidad']} en USD` (`${d['monto']:,.2f}`)")
+                embed.add_field(name="🌍 Ventas en Dólares (USD Neto)", value="\n".join(desglose_usd_lines), inline=False)
+                
+            embed.set_footer(text="Datos extraídos en tiempo real desde NeonDB • Comisiones PayPal deducidas")
             await interaction.followup.send(embed=embed, ephemeral=True)
             
         except asyncio.TimeoutError:

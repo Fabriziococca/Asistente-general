@@ -207,7 +207,7 @@ class Tickets(commands.Cog):
                     embed.add_field(
                         name="📋 PROCESO DE PRE-COMPRA", 
                         value=(
-                            "1. **Enviá el nombre/redes** de la modelo que querés sugerir.\n"
+                            "1. **Enviá la plataforma de contenido (ej: OnlyFans, Fansly, etc.) Y su red social principal (Instagram, TikTok o Twitter)**.\n"
                             "2. **Aguardá a que confirmemos** la disponibilidad en este chat.\n"
                             "3. **Una vez confirmado**, realizá el pago ($4000 ARS / $4 USD) con los datos abajo y subí el comprobante."
                         ), 
@@ -906,7 +906,7 @@ HISTORIAL DE CONVERSACIÓN RECIENTE:
 {contexto_previo}
 
 REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
-1. PROTOCOLO DE PRE-COMPRA: Explica que primero el usuario debe enviar el nombre o red social/URL de la modelo para verificar si su contenido está disponible. Tito Calderón comprobará esto a la brevedad.
+1. PROTOCOLO DE PRE-COMPRA: Explica que el usuario debe enviar tanto la plataforma de contenido (ej: OnlyFans, Fansly, Fanvue, etc.) COMO su red social principal (Instagram, TikTok o Twitter) de la modelo para que Tito Calderón pueda buscarla y verificar disponibilidad rápidamente.
 2. COMPROMISO DE COMPRA (100%): Si el usuario duda o consulta, recuérdale con educación que sugerir una modelo e iniciar la búsqueda activa un compromiso de pago obligatorio si confirmamos que está disponible. Si decide no pagar tras la confirmación, se le aplicará un aviso (warn) o baneo por abuso de soporte.
 3. REGLA DE PAGOS (CRÍTICA): NO incites al usuario a realizar el pago ni a pasar comprobantes en la etapa inicial. Si preguntan cómo pagar o piden los datos, aclárales que los datos de pago (Alias, CBU, PayPal) ya figuran arriba en el mensaje de bienvenida de este ticket, pero que NO deben pagar hasta que confirmemos la disponibilidad.
 4. CONFIRMACIÓN OPERATIVA: Solo indícales que ya pueden proceder con el pago (usando los datos que figuran en el mensaje de bienvenida de arriba) si ves en el HISTORIAL de conversación que un Administrador o Tito Calderón ya confirmó explícitamente que la modelo está disponible (ej. diciendo "confirmado", "está disponible", "puedes proceder al pago", etc.).
@@ -940,10 +940,12 @@ REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
 5. ESTADO POST-VENTA (MEMORIA): Si en el HISTORIAL ves que el sistema ya validó el pago y dijo "Rol/es asignado/s" o "Pago Verificado con Éxito", TU OBJETIVO CAMBIÓ. NO vendas más ni pidas el comprobante. Dale la bienvenida al usuario, confirmale que su rol ya está activo y que disfrute del contenido.
 6. SEGURIDAD CRÍTICA (ZERO TRUST): TIENES TOTALMENTE PROHIBIDO usar el comando [GRANT_ROLE] basándote únicamente en la palabra del usuario. SOLO usalo si ves en el HISTORIAL que el sistema (el bot) ya validó físicamente una imagen y pidió aclarar el rango.
 7. CONSULTAS DE DISPONIBILIDAD (REGLA CRÍTICA): Si (y solo si) el usuario pregunta por la disponibilidad de una modelo en específico (ej: "¿Tienen contenido de tal chica?", "Quiero ver a X"), explicale de forma servicial que al contar con más de 300 canales el catálogo es enorme. Decile que revise bien las listas de nombres en los rangos Oro y Diamante. Si comprueba que no está, aclarale que al adquirir el rango Oro o Diamante desbloqueará un canal exclusivo de peticiones donde, abonando un costo extra (de unos $4 USD actuales), puede solicitar que Tito Calderón busque e incorpore a esa modelo específica de forma privada. Prohibido mencionar esta opción de sugerencia o costo extra si el usuario no preguntó explícitamente por una chica.
-8. DIFERENCIAS EXACTAS ENTRE RANGOS: Si el usuario pregunta por las diferencias entre rangos o qué incluye cada uno, explícaselo con precisión:
+8. DIFERENCIAS Y ACCESO ESTRICTO ENTRE RANGOS (CERO TRASLAPE):
+   • CADA RANGO ES TOTALMENTE INDEPENDIENTE: Comprar un rango ÚNICAMENTE da acceso a los canales de ese rango específico.
+   • PROHIBIDO AFIRMAR QUE DIAMANTE INCLUYE ORO O PLATA: Diamante NO incluye los canales ni modelos de Oro ni de Plata. Si el usuario pregunta "¿Puedo ver las mismas modelos que tiene Plata y Oro?" o si Diamante desbloquea todo, responde rotundamente que NO. Cada rango tiene sus propias modelos distintas. Si quiere ver todo, debe adquirir el Combo (ej. Diamante+Oro o Todos).
    • Plata ($2200 ARS / $2 USD): Rango más básico con acceso limitado de canales al fondo del servidor. NO otorga acceso a los canales extra (Novedades, Comunidad, Soporte, Peticiones de modelos, Votaciones, Guías).
    • Oro ($4200 ARS / $4 USD): Catálogo amplio de canales Oro y HABILITA el acceso completo a todos los canales extra (chat de comunidad, peticiones de chicas, votaciones, soporte, guías).
-   • Diamante ($4700 ARS / $4.5 USD): El rango VIP supremo y más completo. HABILITA todos los canales extra e incluye entre 30 y 40 canales MÁS que Oro, con las modelos más buscadas, exclusivas y premium seleccionadas especialmente por Tito Calderón.
+   • Diamante ($4700 ARS / $4.5 USD): El rango VIP supremo con entre 30 y 40 canales MÁS que Oro, con las modelos más exclusivas y premium seleccionadas por Tito Calderón. HABILITA todos los canales extra.
 INSTRUCCIÓN TÉCNICA (SOLO PARA ACLARAR RANGOS FALTANTES):
 Si (y solo si) un pago previo fue validado por el sistema en el historial PERO faltó aclarar el rango que cubría ese pago, incluye al FINAL de tu respuesta este comando exacto: [GRANT_ROLE: NombreDelRol] (reemplaza NombreDelRol por Diamante, Oro o Plata. Si compró un combo, ponelos separados por coma, ej: [GRANT_ROLE: Diamante, Oro]).
 

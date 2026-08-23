@@ -190,88 +190,102 @@ class Tickets(commands.Cog):
             print(f"❌ [DB Error] No se pudo registrar ticket inicial {channel.id}: {e}")
 
         # Verificar si el bot ya envió el mensaje de bienvenida en este canal
+        ya_envio_bienvenida = False
         try:
-            ya_envio_bienvenida = False
             async for m in channel.history(limit=10):
                 if m.author == self.bot.user and m.embeds and ("Petición Única" in m.embeds[0].title or "Zona de Compras" in m.embeds[0].title):
                     ya_envio_bienvenida = True
                     break
-            
-            if not ya_envio_bienvenida:
-                if es_sugerencia:
-                    embed = discord.Embed(
-                        title="💎 Petición Única de Modelos (Pre-Compra)", 
-                        description="Elegí la chica que querés incorporar al catálogo de forma 100% privada o utilizá tus puntos.", 
-                        color=0x1DB954 # Color Verde Premium Estilo Spotify
-                    )
-                    embed.add_field(
-                        name="📋 PROCESO DE PRE-COMPRA", 
-                        value=(
-                            "1. **Enviá la plataforma de contenido (ej: OnlyFans, Fansly, etc.) Y su red social principal (Instagram, TikTok o Twitter)**.\n"
-                            "2. **Aguardá a que confirmemos** la disponibilidad en este chat.\n"
-                            "3. **Una vez confirmado**, realizá el pago ($4000 ARS / $4 USD) con los datos abajo y subí el comprobante."
-                        ), 
-                        inline=False
-                    )
-                    embed.add_field(
-                        name="💰 DATOS DE PAGO (Pagar solo tras confirmación)", 
-                        value=(
-                            "🇦🇷 **Pesos (ARS)**:\n"
-                            "• **Alias**: LENGUA.LUJOSA.TELAR\n"
-                            "• **CBU**: 3840200500000026286680\n\n"
-                            "🌍 **PayPal (USD)**:\n"
-                            "• **Correo**: sesarjavier28@gmail.com (Monto exacto: $4 USD)"
-                        ),
-                        inline=False
-                    )
-                    embed.add_field(
-                        name="⚠️ COMPROMISO DE COMPRA (100%)",
-                        value=(
-                            "Iniciar la búsqueda implica un compromiso de pago obligatorio si confirmamos disponibilidad. "
-                            "Si te confirmamos que está disponible y decidís no pagar, se te aplicará una advertencia o baneo por abuso de soporte."
-                        ),
-                        inline=False
-                    )
-                    embed.add_field(
-                        name="🎁 CANJEAR POR BUMPS (30 Bumps)",
-                        value="Si tenés 30 Bumps acumulados, escribí: **'Quiero canjear mis puntos'** y aguardá la validación.",
-                        inline=False
-                    )
-                    bienvenida = (
-                        "¡Hola! Soy tu asistente automatizado para peticiones exclusivas. 🤖\n"
-                        "Estoy acá para darte soporte y procesar tu solicitud bajo estricto anonimato.\n\n"
-                    )
-                else:
-                    embed = discord.Embed(
-                        title="🛒 Zona de Compras", 
-                        description="Elegí tu rango y mirá los datos de pago abajo.", 
-                        color=0x2B2D31 # Color oscuro de Discord
-                    )
-                    embed.add_field(
-                        name="📉 LISTA DE PRECIOS", 
-                        value="💎 Rango Diamante: 🇦🇷 Argentina: $4700 ARS 🌍 Internacional: $4,5 USD\n🥇 Rango Oro: 🇦🇷 Argentina: $4200 ARS 🌍 Internacional: $4 USD\n🥈 Rango Plata: 🇦🇷 Argentina: $2200 ARS 🌍 Internacional: $2 USD", 
-                        inline=False
-                    )
-                    embed.add_field(name="Alias:", value="LENGUA.LUJOSA.TELAR", inline=False)
-                    embed.add_field(name="CBU:", value="3840200500000026286680", inline=False)
-                    embed.add_field(
-                        name="🌍 DOLARES (PayPal) Enviar monto exacto a este correo:", 
-                        value="sesarjavier28@gmail.com\n", 
-                        inline=False
-                    )
-                    embed.add_field(
-                        name="✅ ¿Ya pagaste? Seguí estos pasos:", 
-                        value="1. Aclara que rango o rangos estas comprando\n2. Envia el comprobante (Foto o PDF)\n3. El bot entrega el rol correspondiente al instante\n\n❓ Si tenes dudas o problemas, etiqueta a @titocalderon y espera a recibir ayuda\n\n*(Si querés 2 o los 3 rangos juntos, podés transferir el total correspondiente según la combinación elegida.)*", 
-                        inline=False
-                    )
-                    bienvenida = (
-                        "¡Hola! Soy tu asistente de ventas automatizado. 🤖\n"
-                        "Estoy aquí para ayudarte a obtener tu rango de forma rápida.\n\n"
-                    )
-
-                await channel.send(content=bienvenida, embed=embed)
         except Exception as e:
-            print(f"❌ [Error] al procesar bienvenida en {channel.id}: {e}")
+            print(f"⚠️ [Historial Warn] No se pudo leer historial en {channel.id} ({e}). Asumiendo que no envió bienvenida.")
+            ya_envio_bienvenida = False
+            
+        if not ya_envio_bienvenida:
+            if es_sugerencia:
+                embed = discord.Embed(
+                    title="💎 Petición Única de Modelos (Pre-Compra)", 
+                    description="Elegí la chica que querés incorporar al catálogo de forma 100% privada o utilizá tus puntos.", 
+                    color=0x1DB954 # Color Verde Premium Estilo Spotify
+                )
+                embed.add_field(
+                    name="📋 PROCESO DE PRE-COMPRA", 
+                    value=(
+                        "1. **Enviá la plataforma de contenido (ej: OnlyFans, Fansly, etc.) Y su red social principal (Instagram, TikTok o Twitter)**.\n"
+                        "2. **Aguardá a que confirmemos** la disponibilidad en este chat.\n"
+                        "3. **Una vez confirmado**, realizá el pago ($4000 ARS / $4 USD) con los datos abajo y subí el comprobante."
+                    ), 
+                    inline=False
+                )
+                embed.add_field(
+                    name="💰 DATOS DE PAGO (Pagar solo tras confirmación)", 
+                    value=(
+                        "🇦🇷 **Pesos (ARS)**:\n"
+                        "• **Alias**: LENGUA.LUJOSA.TELAR\n"
+                        "• **CBU**: 3840200500000026286680\n\n"
+                        "🌍 **PayPal (USD)**:\n"
+                        "• **Correo**: sesarjavier28@gmail.com (Monto exacto: $4 USD)"
+                    ), 
+                    inline=False
+                )
+                embed.add_field(
+                    name="⚠️ COMPROMISO DE COMPRA (100%)",
+                    value=(
+                        "Iniciar la búsqueda implica un compromiso de pago obligatorio si confirmamos disponibilidad. "
+                        "Si te confirmamos que está disponible y decidís no pagar, se te aplicará una advertencia o baneo por abuso de soporte."
+                    ), 
+                    inline=False
+                )
+                embed.add_field(
+                    name="🎁 CANJEAR POR BUMPS (30 Bumps)",
+                    value="Si tenés 30 Bumps acumulados, escribí: **'Quiero canjear mis puntos'** y aguardá la validación.",
+                    inline=False
+                )
+                bienvenida = (
+                    "¡Hola! Soy tu asistente automatizado para peticiones exclusivas. 🤖\n"
+                    "Estoy acá para darte soporte y procesar tu solicitud bajo estricto anonimato.\n\n"
+                )
+            else:
+                embed = discord.Embed(
+                    title="🛒 Zona de Compras", 
+                    description="Elegí tu rango y mirá los datos de pago abajo.", 
+                    color=0x2B2D31 # Color oscuro de Discord
+                )
+                embed.add_field(
+                    name="📉 LISTA DE PRECIOS", 
+                    value="💎 Rango Diamante: 🇦🇷 Argentina: $4700 ARS 🌍 Internacional: $4,5 USD\n🥇 Rango Oro: 🇦🇷 Argentina: $4200 ARS 🌍 Internacional: $4 USD\n🥈 Rango Plata: 🇦🇷 Argentina: $2200 ARS 🌍 Internacional: $2 USD", 
+                    inline=False
+                )
+                embed.add_field(name="Alias:", value="LENGUA.LUJOSA.TELAR", inline=False)
+                embed.add_field(name="CBU:", value="3840200500000026286680", inline=False)
+                embed.add_field(
+                    name="🌍 DOLARES (PayPal) Enviar monto exacto a este correo:", 
+                    value="sesarjavier28@gmail.com\n", 
+                    inline=False
+                )
+                embed.add_field(
+                    name="✅ ¿Ya pagaste? Seguí estos pasos:", 
+                    value="1. Aclara que rango o rangos estas comprando\n2. Envia el comprobante (Foto o PDF)\n3. El bot entrega el rol correspondiente al instante\n\n❓ Si tenes dudas o problemas, etiqueta a @titocalderon y espera a recibir ayuda\n\n*(Si querés 2 o los 3 rangos juntos, podés transferir el total correspondiente según la combinación elegida.)*", 
+                    inline=False
+                )
+                bienvenida = (
+                    "¡Hola! Soy tu asistente de ventas automatizado. 🤖\n"
+                    "Estoy aquí para ayudarte a obtener tu rango de forma rápida.\n\n"
+                )
+
+            try:
+                await channel.send(content=bienvenida, embed=embed)
+            except discord.HTTPException as err:
+                if err.status == 429:
+                    print(f"⏳ [429 Rate Limit] Reintentando envío de bienvenida en {channel.id} en 5s...")
+                    await asyncio.sleep(5.0)
+                    try:
+                        await channel.send(content=bienvenida, embed=embed)
+                    except Exception as err2:
+                        print(f"❌ Falló reintento de bienvenida en {channel.id}: {err2}")
+                else:
+                    print(f"❌ [Error HTTP] al enviar bienvenida en {channel.id}: {err}")
+            except Exception as e:
+                print(f"❌ [Error] al procesar bienvenida en {channel.id}: {e}")
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel):
@@ -656,9 +670,12 @@ class Tickets(commands.Cog):
             image_parts = [{"mime_type": attachment.content_type, "data": image_data}]
 
             historial = []
-            async for msg in message.channel.history(limit=5, before=message):
-                if not msg.author.bot:
-                    historial.append(f"{msg.author.name}: {msg.content}")
+            try:
+                async for msg in message.channel.history(limit=5, before=message):
+                    if not msg.author.bot:
+                        historial.append(f"{msg.author.name}: {msg.content}")
+            except Exception as e:
+                print(f"⚠️ [Historial Warn] Error leyendo historial en receipt: {e}")
             
             contexto = "\n".join(historial)
             
@@ -891,9 +908,12 @@ Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses 
     async def handle_support_query(self, message: discord.Message):
         # Recopilamos historial para dar contexto a la IA y permitir que entienda aclaraciones posteriores
         historial = []
-        async for msg in message.channel.history(limit=10, before=message):
-            autor = "Usuario" if not msg.author.bot else "Bot"
-            historial.append(f"{autor}: {msg.content}")
+        try:
+            async for msg in message.channel.history(limit=10, before=message):
+                autor = "Usuario" if not msg.author.bot else "Bot"
+                historial.append(f"{autor}: {msg.content}")
+        except Exception as e:
+            print(f"⚠️ [Historial Warn] Error leyendo historial previo en {message.channel.id}: {e}")
         
         contexto_previo = "\n".join(historial)
         es_sugerencia = (getattr(message.channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS) or message.channel.name.startswith("sug-")
@@ -1001,6 +1021,16 @@ Consulta actual del usuario: "{message.content}"
 
         except asyncio.TimeoutError:
             await message.reply("⚠️ **IA Congestionada**: Los servidores de Google están tardando en responder. Tu consulta es importante; por favor, intentá preguntar de nuevo en un instante.")
+        except discord.HTTPException as e:
+            if e.status == 429:
+                print(f"⏳ [429 Rate Limit] en handle_support_query para {message.channel.id}: {e}")
+                await asyncio.sleep(4.0)
+                try:
+                    await message.reply("¡Hola! Disculpá la demora momentánea. ¿En qué rango estás interesado o cómo te puedo ayudar?")
+                except Exception:
+                    pass
+            else:
+                print(f"❌ [Discord HTTP Error]: {e}")
         except Exception as e:
             print(f"❌ [IA Support Error]: {e}")
 

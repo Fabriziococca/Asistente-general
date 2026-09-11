@@ -264,7 +264,13 @@ class Tickets(commands.Cog):
                 )
                 embed.add_field(
                     name="✅ ¿Ya pagaste? Seguí estos pasos:", 
-                    value="1. Aclara que rango o rangos estas comprando\n2. Envia el comprobante (Foto o PDF)\n3. El bot entrega el rol correspondiente al instante\n\n❓ Si tenes dudas o problemas, etiqueta a @titocalderon y espera a recibir ayuda\n\n*(Si querés 2 o los 3 rangos juntos, podés transferir el total correspondiente según la combinación elegida.)*", 
+                    value=(
+                        "1. Aclará qué rango o rangos estás comprando\n"
+                        "2. Enviá la FOTO o PDF del comprobante acá al chat *(el banco NO se vincula solo; el bot necesita ver la imagen para darte el rol)*\n"
+                        "3. El bot valida la imagen y te entrega el rol al instante\n\n"
+                        "❓ Si tenés dudas o problemas, etiquetá a @titocalderon y esperá a recibir ayuda\n\n"
+                        "*(Si querés 2 o los 3 rangos juntos, podés transferir el total correspondiente según la combinación elegida.)*"
+                    ), 
                     inline=False
                 )
                 bienvenida = (
@@ -956,7 +962,10 @@ REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
 1. PRECIOS: Diamante ($4700 ARS / $4.5 USD), Oro ($4200 ARS / $4 USD), Plata ($2200 ARS / $2 USD). Combos: Diamante+Oro ($8900 ARS / $8.5 USD), Diamante+Plata ($6900 ARS / $6.5 USD), Oro+Plata ($6400 ARS / $6 USD), Todos ($11100 ARS / $10.5 USD). NUNCA des otros precios.
 2. RESPUESTAS CORTAS: Máximo 1 o 2 párrafos cortos (no más de 60 palabras). Sé directo.
 3. IDENTIDAD BANCARIA: Si preguntan por el nombre del destinatario del pago o titular, es Fabrizio Giovanni Cocca Ducay.
-4. ASINCRONÍA DE FOTOS: Si el usuario dice "ya lo mandé", "ahí pasé el comprobante", responde: "¡Buenísimo! El sistema automático de auditoría lo está analizando en este momento." NO le pidas que envíe la foto de nuevo.
+4. VALIDACIÓN DE COMPROBANTE Y NO VINCULACIÓN AUTOMÁTICA (CRÍTICA):
+   • El sistema bancario (MercadoPago, bancos, PayPal) NO está vinculado automáticamente por API a Discord.
+   • Si el usuario dice "ya pagué", "ya transferí", "dónde está mi rango", "no me llegó el rol", "¿por qué no me da el rol?", o similar, pero NO envió la imagen del comprobante en este chat, explícale con total claridad y amabilidad: "El sistema no se vincula automáticamente con tu cuenta bancaria. Para recibir tu rango, tenés que enviar acá al chat la foto o PDF clara de tu comprobante de pago para que el bot pueda auditar la imagen y entregarte el rol al instante."
+   • Si (y solo si) ves en el HISTORIAL que el usuario efectivamente ya adjuntó la foto del comprobante y dice "ahí lo mandé", responde: "¡Buenísimo! El sistema automático de auditoría lo está analizando en este momento."
 5. ESTADO POST-VENTA (MEMORIA): Si en el HISTORIAL ves que el sistema ya validó el pago y dijo "Rol/es asignado/s" o "Pago Verificado con Éxito", TU OBJETIVO CAMBIÓ. NO vendas más ni pidas el comprobante. Dale la bienvenida al usuario, confirmale que su rol ya está activo y que disfrute del contenido.
 6. SEGURIDAD CRÍTICA (ZERO TRUST): TIENES TOTALMENTE PROHIBIDO usar el comando [GRANT_ROLE] basándote únicamente en la palabra del usuario. SOLO usalo si ves en el HISTORIAL que el sistema (el bot) ya validó físicamente una imagen y pidió aclarar el rango.
 7. CONSULTAS DE DISPONIBILIDAD (REGLA CRÍTICA): Si (y solo si) el usuario pregunta por la disponibilidad de una modelo en específico (ej: "¿Tienen contenido de tal chica?", "Quiero ver a X"), explicale de forma servicial que al contar con más de 300 canales el catálogo es enorme. Decile que revise bien las listas de nombres en los rangos Oro y Diamante. Si comprueba que no está, aclarale que al adquirir el rango Oro o Diamante desbloqueará un canal exclusivo de peticiones donde, abonando un costo extra (de unos $4 USD actuales), puede solicitar que Tito Calderón busque e incorpore a esa modelo específica de forma privada. Prohibido mencionar esta opción de sugerencia o costo extra si el usuario no preguntó explícitamente por una chica.

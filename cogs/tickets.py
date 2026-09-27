@@ -39,19 +39,11 @@ class Tickets(commands.Cog):
         self.mi_id = FABRIZIO_ID # Tu ID de usuario para detección de menciones
         self.fallos_tickets = {} # Memoria RAM para el control defensivo y disyuntor de fallos por canal
         
-        # NUNCA MODIFICAR A NO SER QUE EL USUARIO LO PIDA
-        # Pool secuencial de 10 modelos funcionales validados para rotación defensiva
+        # Pool de 3 modelos funcionales solicitados para rotación
         self.model_pool = [
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-            "gemini-3.1-flash-lite",
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite",
-            "gemma-4-31b-it",
-            "gemma-4-26b-a4b-it",
-            "gemini-flash-latest",
-            "gemini-flash-lite-latest"
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash"
         ]
         
         # Setup Multi-API Key para evitar saturación
@@ -433,6 +425,17 @@ class Tickets(commands.Cog):
         except Exception as e:
             print(f"❌ [DB Error] al anular pago de ticket {target_channel.id}: {e}")
             await interaction.followup.send("❌ Ocurrió un error al intentar anular los pagos en la base de datos.", ephemeral=True)
+
+    @app_commands.command(name="purgar_tickets", description="Elimina de inmediato todos los tickets viejos y abandonados del servidor")
+    @app_commands.default_permissions(administrator=True)
+    async def purgar_tickets(self, interaction: discord.Interaction):
+        """Comando de administrador para forzar el barrido y borrado masivo de tickets acumulados."""
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self.cleanup_tickets()
+            await interaction.followup.send("✅ **Limpieza completada**: Se ejecutó el barrido de limpieza y se eliminaron los tickets acumulados elegibles.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error al ejecutar la purga de tickets: {e}", ephemeral=True)
 
     @app_commands.command(name="finanzas", description="Muestra el reporte financiero mensual unificado (Pesos ARS + Dólares USD)")
     @app_commands.default_permissions(administrator=True)

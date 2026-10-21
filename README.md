@@ -18,7 +18,7 @@ No hay API bancaria ni confirmación de acreditación. La aprobación se basa en
 
 `/conservar_ticket` es exclusivo para administradores. Guarda una protección permanente en Neon, respetada por limpieza periódica, `/purgar_tickets`, compra completada y salida del cliente del servidor. Reiniciar o completar la venta no quita la marca. El ticket queda para borrado manual.
 
-La protección no controla botones ni automatizaciones de Ticket Tool u otros bots. `/manual` apaga la atención automática y no equivale a conservar.
+La protección no controla botones ni automatizaciones de Ticket Tool u otros bots. `/manual` pausa la atención y los reintentos de entrega. `/automatico` los reanuda sin quitar la protección de conservación.
 
 Sin protección, los tickets sin conversación pueden cerrarse a las tres horas y los demás a las 24 horas de inactividad. Se comprueba también el historial reciente de Discord. Un fallo al leerlo o una entrega pendiente impiden el borrado. Se eliminó el barrido basado solo en la edad del canal. Las sugerencias con conversación conservan su protección previa.
 
@@ -44,3 +44,23 @@ python -m unittest discover -s tests -v
 La suite normal simula Discord y Gemini. Para la integración PostgreSQL configurar `BOT_TEST_DATABASE_URL`: usa el endpoint directo, una transacción y tablas TEMP con `search_path=pg_temp`; revierte la transacción y cierra la conexión al terminar. No escribe filas de negocio.
 
 Al desplegar, comprobar commit en Render, carga de cogs, sincronización de `/conservar_ticket`, esquema actualizado y jerarquía de roles. HTTP 200 del servidor de salud no demuestra conexión con Discord ni Neon.
+
+## Atención y recuperación
+
+Las consultas frecuentes (precios, cobro, duración, diferencias, comprobantes y acceso) se responden localmente sin Gemini. Las demás usan historial cronológico con autores identificados por Discord y estado real de la compra. No se infiere acreditación ni análisis en curso a partir de frases del cliente. Las respuestas largas se dividen según el límite de Discord y las menciones de la IA no generan pings.
+
+`ticket_inbox` guarda IDs y estados, no el texto de las conversaciones. Los mensajes en trámite tienen una reserva temporal; si se reinicia el proceso, se recuperan al vencerla. Los eventos duplicados ya completados no se procesan nuevamente. La revisión de canales y bienvenidas corre al reconectar y cada cinco minutos, en lotes limitados. Un ticket con respuesta pendiente no se borra automáticamente.
+
+La recuperación comienza con el despliegue de esta versión; no reproduce conversaciones ni comprobantes históricos anteriores. Un archivo eliminado de Discord o un canal sin permisos requiere intervención humana. La recuperación depende de que Discord mantenga el mensaje y el servicio vuelva a ejecutarse.
+
+El modo manual se respeta durante la recuperación. Las consultas demoradas tienen un aviso de recepción y, si falla Google, una respuesta útil y derivación a administración. Los modelos con errores quedan temporalmente en espera para no agotar cuota repitiendo llamadas. El presupuesto incluye la espera por la IA: 35 segundos para texto y 90 para comprobantes.
+
+El aviso semanal conserva su fecha en Neon; reiniciar o reconectar ya no dispara otro @everyone. La primera ejecución de esta versión inicia ese calendario sin emitir un broadcast.
+
+## Operación gratuita y salud
+
+El supervisor recrea el cliente después de fallos transitorios, cierra el pool anterior y conserva los trabajos en Neon. Un módulo esencial que no carga aborta ese cliente; no se sincroniza un árbol incompleto de comandos. Las dependencias directas se fijan a versiones verificadas.
+
+`/` y `/readyz` devuelven 200 solo con conexión Discord, base comprobada, tickets cargados y comandos sincronizados; en caso contrario devuelven 503. `/healthz` comprueba la actividad del proceso/event loop. La base se comprueba cada cinco minutos, sin consultas por cada health check HTTP. Los endpoints exponen únicamente estados, sin credenciales ni conversaciones.
+
+Render Free puede suspender servicios por inactividad o al consumir sus horas incluidas; Gemini gratuito también tiene cuotas y disponibilidad variable. Estas mejoras recuperan trabajo al volver a estar disponible el servicio y reducen silencios; no ofrecen disponibilidad continua garantizada. No se agregan servicios pagos ni mecanismos artificiales para impedir la suspensión. Referencias: https://render.com/docs/free y https://ai.google.dev/gemini-api/docs/rate-limits.

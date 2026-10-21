@@ -26,6 +26,9 @@ def requested_roles(text):
     # Una pregunta sobre qué incluye un rango no constituye una orden de compra.
     if "incluy" in text or "inclu" in text or ("?" in text and "quiero" not in text):
         return ()
+    if re.search(r'\b(precio|cuanto|cuesta|cuestan|diferencia)\b', text) and not re.search(
+            r'\b(quiero|compro|comprar|me llevo)\b', text):
+        return ()
     if re.search(r"\b(todos|los (tres|3)|3 rangos|tres rangos)\b", text):
         return tuple(PRICES)
     return tuple(role for role in PRICES if re.search(rf"\b{role.lower()}\b", text))

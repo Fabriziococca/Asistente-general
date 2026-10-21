@@ -1,141 +1,156 @@
+import asyncio
+import contextlib
+import logging
+import os
+import time
+
+import asyncpg
 import discord
 from discord.ext import commands
-import os
 from dotenv import load_dotenv
-import asyncpg
-import asyncio
-import time
-from keep_alive import keep_alive 
 
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+from runtime_health import HealthState, start_health_server
 
-# Intents necesarios para leer el contenido de los mensajes
-intents = discord.Intents.default()
-intents.message_content = True 
-intents.members = True
+log = logging.getLogger('asistente')
+
 
 class Bot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
+    def __init__(self, database_url=None, health=None):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        super().__init__(command_prefix='!', intents=intents, allowed_mentions=discord.AllowedMentions.none())
+        self.database_url = database_url
+        self.health = health or HealthState()
         self.pool = None
+        self._health_task = None
+        self._sync_task = None
+        self.tree.on_error = self._command_error
+
+    async def _command_error(self, interaction, error):
+        if isinstance(error, discord.app_commands.CheckFailure):
+            text = 'No tenés permisos para usar este comando.'
+        else:
+            text = 'No pude completar el comando por una demora técnica. Intentá nuevamente en un momento.'
+            log.warning('Comando incompleto: %s', type(error).__name__)
+        if interaction.response.is_done():
+            await interaction.followup.send(text, ephemeral=True)
+        else:
+            await interaction.response.send_message(text, ephemeral=True)
 
     async def setup_hook(self):
-        """Inicializa la DB, carga los Cogs y sincroniza comandos al arrancar."""
-        print("Iniciando setup_hook...")
-        
-        # 1. Configuración y conexión robusta a la base de datos NeonDB (asyncpg)
-        try:
-            print("Conectando al pool de base de datos...")
-            self.pool = await asyncpg.create_pool(
-                dsn=DATABASE_URL,
-                min_size=0, # Permite reducir a 0 conexiones en inactividad para que NeonDB auto-suspenda (Ahorro de CU-hrs)
-                max_size=10,
-                command_timeout=60.0,
-                timeout=20.0, # Margen amplio para auto-despertar de NeonDB (500ms-1s)
-                max_inactive_connection_lifetime=10.0 # Cierra conexiones inactivas tras 10 seg para iniciar el sleep de Neon de inmediato
-            )
-            
-            # Schema: Clave compuesta (user_id, guild_id) para conteo por servidor
-            async with self.pool.acquire(timeout=10.0) as conn:
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS bumps (
-                        user_id TEXT,
-                        guild_id TEXT,
-                        count INTEGER DEFAULT 0,
-                        PRIMARY KEY (user_id, guild_id)
-                    )
-                """)
-                # También verificamos la tabla de tickets por las dudas
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS tickets (
-                        channel_id BIGINT PRIMARY KEY,
-                        user_id BIGINT,
-                        estado TEXT DEFAULT 'abierto',
-                        ultimo_mensaje TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-            print("✅ Base de datos y pool inicializados correctamente.")
-            
-        except asyncio.TimeoutError:
-            print("❌ [CRITICAL] Timeout: No se pudo conectar a la base de datos a tiempo.")
-            await self.close()
-            return
-        except asyncpg.PostgresError as e:
-            print(f"❌ [CRITICAL] Error de PostgreSQL al iniciar el pool: {e}")
-            await self.close()
-            return
-        except Exception as e:
-            print(f"❌ [CRITICAL] Error inesperado en la base de datos: {e}")
-            await self.close()
-            return
+        self._health_task = asyncio.create_task(self._monitor_health())
+        # Un error esencial aborta este cliente; el supervisor crea uno nuevo.
+        self.pool = await asyncpg.create_pool(dsn=self.database_url, min_size=0, max_size=5,
+            command_timeout=20, timeout=20, max_inactive_connection_lifetime=10)
+        async with self.pool.acquire(timeout=15) as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS bumps (
+                    user_id TEXT, guild_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(user_id,guild_id));
+                CREATE TABLE IF NOT EXISTS tickets (
+                    channel_id BIGINT PRIMARY KEY,user_id BIGINT,estado TEXT DEFAULT 'abierto',
+                    ultimo_mensaje TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
+            """)
+        self.health.update(database=True)
+        for extension in ('cogs.bumps', 'cogs.tickets'):
+            await self.load_extension(extension)
+            log.info('Módulo cargado: %s', extension)
+        self.health.update(tickets=True)
+        self._sync_task = asyncio.create_task(self._sync_commands())
 
-        # 2. Cargar todos los módulos/Cogs
-        cogs_dir = './cogs'
-        if not os.path.exists(cogs_dir):
-            os.makedirs(cogs_dir)
-            print(f"📁 Directorio {cogs_dir} creado.")
+    async def _sync_commands(self):
+        while not self.is_closed():
+            try:
+                synced = await self.tree.sync()
+                self.health.update(commands=True)
+                log.info('Comandos sincronizados: %s', len(synced))
+                return
+            except Exception as exc:
+                log.warning('Sincronización pendiente: %s', type(exc).__name__)
+                await asyncio.sleep(30)
 
-        for filename in os.listdir(cogs_dir):
-            if filename.endswith('.py'):
+    async def _monitor_health(self):
+        checked = 0
+        while not self.is_closed():
+            self.health.update(discord=self.is_ready())
+            if self.pool is not None and time.monotonic()-checked >= 300:
                 try:
-                    await self.load_extension(f'cogs.{filename[:-3]}')
-                    print(f"📦 Cog cargado correctamente: {filename}")
-                except Exception as e:
-                    print(f"❌ [ERROR] Falló la carga del cog {filename}: {e}")
+                    async with self.pool.acquire(timeout=10) as conn:
+                        await conn.fetchval('SELECT 1', timeout=5)
+                    self.health.update(database=True)
+                except Exception as exc:
+                    self.health.update(database=False)
+                    log.warning('Base temporalmente no disponible: %s', type(exc).__name__)
+                checked = time.monotonic()
+            await asyncio.sleep(10)
 
-        # 3. Sincronizar el árbol de comandos para los slash commands
+    async def on_ready(self):
+        self.health.update(discord=True)
+        log.info('Discord conectado como %s', self.user.name)
+
+    async def on_disconnect(self):
+        self.health.update(discord=False)
+
+    async def on_resumed(self):
+        self.health.update(discord=True)
+        log.info('Sesión Discord recuperada')
+
+    async def close(self):
+        self.health.update(discord=False, tickets=False, commands=False)
+        for task in (self._sync_task, self._health_task):
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        await super().close()
+        if self.pool is not None:
+            try:
+                await asyncio.wait_for(self.pool.close(), timeout=10)
+            except TimeoutError:
+                self.pool.terminate()
+            self.pool = None
+        self.health.update(database=False)
+
+
+async def supervise(token, database_url, health, *, bot_factory=Bot, sleep=asyncio.sleep):
+    delay = 5
+    while True:
+        client = bot_factory(database_url=database_url, health=health)
         try:
-            print("🔄 Sincronizando comandos Slash...")
-            synced = await self.tree.sync()
-            print(f"✅ Sincronizados {len(synced)} comandos Slash a nivel global.")
-        except discord.HTTPException as e:
-            print(f"❌ [ERROR] Falló la sincronización con la API de Discord: {e}")
-        except Exception as e:
-            print(f"❌ [ERROR] Error inesperado al sincronizar comandos: {e}")
+            await client.start(token, reconnect=True)
+            log.warning('Discord terminó inesperadamente; reiniciando cliente')
+        except discord.LoginFailure:
+            log.error('La credencial de Discord fue rechazada; requiere intervención')
+            raise
+        except Exception as exc:
+            log.warning('Reinicio recuperable: %s', type(exc).__name__)
+        finally:
+            await client.close()
+        remaining = delay
+        while remaining > 0:
+            health.update(discord=False)
+            await sleep(min(10, remaining))
+            remaining -= 10
+        delay = min(delay * 2, 120)
 
-bot = Bot()
 
-@bot.event
-async def on_ready():
-    print(f"🤖 Bot conectado como {bot.user} (ID: {bot.user.id})")
-    print("=======================================")
+def main():
+    load_dotenv()
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    token = os.environ.get('DISCORD_TOKEN')
+    database_url = os.environ.get('DATABASE_URL')
+    if not token or not database_url:
+        raise SystemExit('Falta DISCORD_TOKEN o DATABASE_URL; no se inició el servicio')
+    health = HealthState()
+    server = start_health_server(health, int(os.environ.get('PORT', '8080')))
+    try:
+        asyncio.run(supervise(token, database_url, health))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        server.server_close()
+
 
 if __name__ == '__main__':
-    # Mantenemos vivo el servidor HTTP para Render
-    keep_alive()
-    
-    if not TOKEN:
-        print("❌ [CRITICAL] DISCORD_TOKEN no encontrado en el archivo .env.")
-    elif not DATABASE_URL:
-        print("❌ [CRITICAL] DATABASE_URL no encontrado en el archivo .env.")
-    else:
-        # LÓGICA DE REINTENTOS ANTI-CLOUDFLARE (Error 429/1015)
-        max_reintentos = 5
-        reintento_actual = 0
-        
-        while reintento_actual < max_reintentos:
-            try:
-                print(f"🚀 Iniciando el bot (Intento {reintento_actual + 1})...")
-                bot.run(TOKEN)
-                # Si bot.run termina normalmente (cosa que no debería), salimos del bucle
-                break
-            except discord.errors.HTTPException as e:
-                # El error 429 es Too Many Requests, típico de Cloudflare 1015
-                if e.status == 429:
-                    espera = (2 ** reintento_actual) * 30 # Espera progresiva (30s, 60s, 120s...)
-                    print(f"⚠️ [BLOQUEO] Cloudflare detectado (429). Reintentando en {espera} segundos...")
-                    time.sleep(espera)
-                    reintento_actual += 1
-                else:
-                    print(f"❌ [CRITICAL] Error de HTTP no manejado: {e}")
-                    break
-            except Exception as e:
-                print(f"❌ [CRITICAL] El bot falló por un error inesperado: {e}")
-                # Esperamos un poco antes de un reintento genérico
-                time.sleep(10)
-                reintento_actual += 1
-
-        if reintento_actual == max_reintentos:
-            print("💀 [FATAL] Se alcanzaron los reintentos máximos. La IP de Render está baneada por Cloudflare.")
+    main()

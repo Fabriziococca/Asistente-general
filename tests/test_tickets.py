@@ -45,7 +45,10 @@ def fixture():
     cog = Tickets(bot)
     cog.payments = NS(known=AsyncMock(return_value=None), save=AsyncMock(return_value=[]),
                       prepare=AsyncMock(return_value={'empty': True}),
-                      attempt=AsyncMock(return_value=1), finish=AsyncMock(), failed=AsyncMock())
+                      attempt=AsyncMock(return_value=1), finish=AsyncMock(), failed=AsyncMock(),
+                      summary=AsyncMock(return_value={'state':'unknown','roles':[]}))
+    cog.inbox = NS(record=AsyncMock(),claim=AsyncMock(return_value={'attempts':1}),
+                   done=AsyncMock(),retry=AsyncMock())
     author = NS(id=123, bot=False, guild_permissions=NS(administrator=False), roles=[])
     author.add_roles = AsyncMock()
     roles = {r['id']: NS(id=r['id']) for r in ROLES.values()}

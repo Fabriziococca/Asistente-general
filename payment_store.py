@@ -39,6 +39,22 @@ class PaymentStore:
         async with self.pool.acquire(timeout=10) as conn:
             return await conn.fetchrow("SELECT * FROM pagos WHERE comprobante_hash = $1", digest)
 
+    async def summary(self, ticket_id, user_id):
+        async with self.pool.acquire(timeout=10) as conn:
+            rows = await conn.fetch("""SELECT entrega_estado,roles_asignados FROM pagos
+                WHERE ticket_id=$1 AND user_id=$2 ORDER BY pago_id DESC""", ticket_id, user_id)
+        states = {row['entrega_estado'] for row in rows}
+        if states & {'preparado','reintentar','manual'}:
+            state = 'delivery_pending'
+        elif 'pendiente' in states:
+            state = 'receipt_pending'
+        elif 'entregado' in states:
+            state = 'delivered'
+        else:
+            state = 'unknown'
+        return {'state': state, 'roles': list(dict.fromkeys(
+            name for row in rows for name in (row['roles_asignados'] or [])))}
+
     async def save(self, message, receipts, digests, suggestion=False):
         """No se asigna acceso antes de guardar. Los reenvíos no agregan ingresos."""
         rows = []

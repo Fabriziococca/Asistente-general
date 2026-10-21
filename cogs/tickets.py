@@ -4,11 +4,14 @@ from discord import app_commands
 import asyncpg
 import asyncio
 import os
-import json
 import google.generativeai as genai
-from google.api_core.exceptions import GoogleAPIError
 import re
-import random # Agregado para la rotación de API Keys
+import datetime
+import hashlib
+import weakref
+
+from payment_store import PaymentStore
+from receipts import attachment_mime, parse_receipts, requested_roles, vision_prompt
 
 # --- CONFIGURACIÓN DE NEGOCIO AND ACCESO HIGH-LEVEL ---
 ID_CATEGORIA_SUGERENCIAS = 1510095191275737088
@@ -37,7 +40,9 @@ class Tickets(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.mi_id = FABRIZIO_ID # Tu ID de usuario para detección de menciones
-        self.fallos_tickets = {} # Memoria RAM para el control defensivo y disyuntor de fallos por canal
+        self.payments = PaymentStore(bot.pool)
+        self._ticket_locks = weakref.WeakValueDictionary()
+        self._ai_lock = asyncio.Lock()
         
         # Pool de 3 modelos funcionales solicitados para rotación
         self.model_pool = [
@@ -75,83 +80,81 @@ class Tickets(commands.Cog):
                 monto NUMERIC(10, 2),
                 moneda TEXT,
                 concepto TEXT,
-                metodo_pago TEXT DEFAULT 'paypal'
+                metodo_pago TEXT DEFAULT 'paypal',
+                fecha_pago TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """
         try:
             async with self.bot.pool.acquire(timeout=10.0) as conn:
+                await conn.execute("CREATE TABLE IF NOT EXISTS usuarios (user_id BIGINT PRIMARY KEY)")
                 await conn.execute(query_tickets)
                 await conn.execute(query_pagos)
-                # Añadimos la columna 'hablo' si es que la tabla ya existía de antes
-                try:
-                    await conn.execute("ALTER TABLE tickets ADD COLUMN hablo BOOLEAN DEFAULT FALSE")
-                except asyncpg.PostgresError:
-                    pass
-                # Añadimos la columna 'metodo_pago' si es que la tabla ya existía de antes
-                try:
-                    await conn.execute("ALTER TABLE pagos ADD COLUMN metodo_pago TEXT DEFAULT 'paypal'")
-                except asyncpg.PostgresError:
-                    pass
+                await conn.execute("ALTER TABLE tickets ADD COLUMN IF NOT EXISTS hablo BOOLEAN DEFAULT FALSE")
+                await conn.execute("ALTER TABLE pagos ADD COLUMN IF NOT EXISTS metodo_pago TEXT DEFAULT 'paypal'")
             print("✅ [Tickets & Pagos] Tablas verificadas/creadas exitosamente.")
         except Exception as e:
             print(f"❌ [DB Error] Error al crear las tablas: {e}")
-            
+            raise
+
+        await self.payments.initialize()
         # Iniciar la limpieza periódica y el remarketing automático
         self.cleanup_tickets.start()
         self.auto_promo_refresh.start()
+        self.recover_deliveries.start()
 
     async def cog_unload(self):
         self.cleanup_tickets.cancel()
         self.auto_promo_refresh.cancel()
+        self.recover_deliveries.cancel()
 
     # NUNCA MODIFICAR A NO SER QUE EL USUARIO LO PIDA
     # --- OMNI-PROTOCOLO SELECCIÓN Y ROTACIÓN HÍBRIDA DE CAPA GRATUITA ---
     async def _generate_content_with_rotation(self, prompt, image_parts=None):
-        """Ejecuta la conmutación de API Keys y salta secuencialmente por el pool de 10 modelos ante errores."""
+        async with self._ai_lock:
+            return await self._generate_content(prompt, image_parts)
+
+    async def _generate_content(self, prompt, image_parts=None):
+        """Ejecuta la conmutación de API Keys y salta secuencialmente por el pool configurado de modelos ante errores."""
         if not self.api_keys:
-            raise Exception("No se encontraron API Keys configuradas en el entorno. Se sugiere configurar facturación comercial o agregar llaves válidas.")
+            raise Exception("No hay claves Gemini configuradas. La consulta requiere revisión manual.")
         
         # El sistema probará un ciclo entero por cada API Key disponible en tu pool
         for intento_key in range(len(self.api_keys)):
             llave_actual = self.api_keys[self.current_key_index]
             genai.configure(api_key=llave_actual)
             
-            # Recorremos de forma secuencial el pool de 10 modelos validados para la llave activa
+            # Recorremos de forma secuencial el pool configurado de modelos validados para la llave activa
             for model_name in self.model_pool:
                 try:
                     model = genai.GenerativeModel(model_name)
                     
                     if image_parts:
                         response = await asyncio.wait_for(
-                            asyncio.to_thread(model.generate_content, contents=[prompt, image_parts[0]]),
+                            asyncio.to_thread(model.generate_content, contents=[prompt, *image_parts],
+                                              generation_config={'response_mime_type': 'application/json', 'temperature': 0},
+                                              request_options={'timeout': 25, 'retry': None}),
                             timeout=30.0
                         )
                     else:
                         response = await asyncio.wait_for(
-                            asyncio.to_thread(model.generate_content, contents=[prompt]),
+                            asyncio.to_thread(model.generate_content, contents=[prompt],
+                                              request_options={'timeout': 25, 'retry': None}),
                             timeout=30.0
                         )
                     return response.text.strip()
                     
                 except Exception as e:
-                    # Captura limpia de errores (429 cuota superada, 503 saturación, 404 modelo discontinuado/no encontrado o APIError general)
-                    try:
-                        from google.genai.errors import APIError as GenAI_APIError
-                        es_apierror = isinstance(e, GenAI_APIError)
-                    except ImportError:
-                        es_apierror = isinstance(e, GoogleAPIError)
-                    
                     error_type = type(e).__name__
-                    print(f"⚠️ [Advertencia IA] ({error_type}) Fallo con modelo '{model_name}' usando API Key índice {self.current_key_index}: {e}. Rotando al siguiente modelo disponible...")
-                    continue # Salta al siguiente modelo disponible del pool de 10
+                    print(f"⚠️ [Advertencia IA] ({error_type}) Fallo con modelo '{model_name}' usando API Key índice {self.current_key_index}. Rotando al siguiente modelo disponible...")
+                    continue # Salta al siguiente modelo disponible del pool configurado
             
-            # Si el bucle de modelos termina sin retornar, la Key actual agotó los 10 modelos
+            # Si el bucle de modelos termina sin retornar, la Key actual agotó los modelos
             indice_viejo = self.current_key_index
             self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-            print(f"🔄 [CONMUTACIÓN CRÍTICA] Pool de 10 modelos agotado para API Key índice {indice_viejo}. Saltando a API Key índice {self.current_key_index} para reiniciar el ciclo completo del pool...")
+            print(f"🔄 [CONMUTACIÓN CRÍTICA] Pool de modelos agotado para API Key índice {indice_viejo}. Saltando a API Key índice {self.current_key_index} para reiniciar el ciclo completo del pool...")
             
         # Si salimos de ambos bucles, todas las API Keys agotaron de manera consecutiva el pool entero
-        raise Exception("🚨 [EXCEPCIÓN CRÍTICA FINAL] Se agotaron todas las API Keys configuradas tras probar de manera consecutiva el pool completo de 10 modelos funcionales (errores 429/503/404). Se sugiere la configuración de facturación comercial.")
+        raise Exception("🚨 [EXCEPCIÓN CRÍTICA FINAL] Se agotaron todas las API Keys configuradas tras probar el pool configurado. La consulta requiere revisión manual.")
 
     async def _procesar_bienvenida_y_registro(self, channel: discord.TextChannel):
         """Registra el ticket en la DB de forma garantizada y envía la bienvenida si aún no fue enviada."""
@@ -161,17 +164,17 @@ class Tickets(commands.Cog):
         es_sugerencia = (getattr(channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS or (hasattr(channel, 'name') and channel.name.startswith("sug-")))
         
         # Detectar el usuario en las overwrites
-        user_id = 0
+        user_id = None
         if hasattr(channel, 'overwrites'):
             for target in channel.overwrites:
-                if isinstance(target, discord.Member) and not target.bot:
+                if isinstance(target, discord.Member) and not target.bot and not target.guild_permissions.administrator:
                     user_id = target.id
                     break
 
         # Guardado garantizado en DB
         try:
             async with self.bot.pool.acquire(timeout=10.0) as conn:
-                if user_id != 0:
+                if user_id is not None:
                     await conn.execute("INSERT INTO usuarios (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
                 await conn.execute("""
                     INSERT INTO tickets (channel_id, user_id, estado, ultimo_mensaje, hablo)
@@ -311,35 +314,48 @@ class Tickets(commands.Cog):
                         print(f"❌ Error en sync de ticket {channel.id}: {e}")
         print("✅ [Sync Ticket Audit] Escaneo completado. Todos los tickets están sincronizados en NeonDB.")
 
+    def _ticket_lock(self, channel_id):
+        lock = self._ticket_locks.get(channel_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._ticket_locks[channel_id] = lock
+        return lock
+
     @commands.Cog.listener()
     async def on_member_remove(self, member):
-        """Automatización: Elimina los tickets si el usuario abandona el servidor."""
-        user_id = member.id
-        query = "SELECT channel_id FROM tickets WHERE user_id = $1"
+        async with self.bot.pool.acquire(timeout=10) as conn:
+            rows = await conn.fetch("SELECT channel_id FROM tickets WHERE user_id=$1", member.id)
+        for row in rows:
+            channel = member.guild.get_channel(row['channel_id'])
+            if channel:
+                await self._delete_ticket_if_eligible(channel, member_left=True)
+
+    @app_commands.command(name="conservar_ticket", description="Impide que este bot borre automáticamente el ticket")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def conservar_ticket(self, interaction: discord.Interaction):
+        channel = interaction.channel
+        if not self._is_ticket(channel):
+            await interaction.response.send_message("Usá este comando dentro de un ticket.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
         try:
-            # Limpiamos la caché de fallos del usuario para liberar RAM de forma defensiva
-            for ch in list(self.fallos_tickets.keys()):
-                if ch in self.fallos_tickets:
-                    self.fallos_tickets.pop(ch, None)
-                    
-            async with self.bot.pool.acquire(timeout=5.0) as conn:
-                records = await conn.fetch(query, user_id)
-                for record in records:
-                    channel_id = record['channel_id']
-                    channel = member.guild.get_channel(channel_id)
-                    if channel:
-                        try:
-                            await channel.delete(reason=f"Auto-Close: Usuario {member.name} abandonó el servidor.")
-                            print(f"🗑️ [Auto-Close] Ticket {channel_id} borrado porque el usuario se fue.")
-                        except discord.NotFound:
-                            pass
-                        except Exception as e:
-                            print(f"❌ [Error] al borrar ticket {channel_id}: {e}")
-                
-                # Limpiar registro en la base de datos
-                await conn.execute("DELETE FROM tickets WHERE user_id = $1", user_id)
-        except Exception as e:
-            print(f"❌ [DB Error] en on_member_remove: {e}")
+            async with self._ticket_lock(channel.id):
+                async with self.bot.pool.acquire(timeout=10) as conn:
+                    await conn.execute("""INSERT INTO tickets (channel_id, conservar)
+                        VALUES ($1, TRUE) ON CONFLICT (channel_id) DO UPDATE SET conservar=TRUE""", channel.id)
+            await interaction.followup.send(
+                "🔒 Ticket conservado. Este bot no lo borrará por inactividad, purga, compra completada "
+                "ni salida del cliente. Queda para que lo borres manualmente. "
+                "La protección no controla los botones ni automatizaciones de Ticket Tool.", ephemeral=True)
+        except Exception as exc:
+            print(f"[Conservar ticket] {type(exc).__name__}")
+            await interaction.followup.send("No pude guardar la protección. El ticket todavía no quedó conservado.", ephemeral=True)
+
+    @staticmethod
+    def _is_ticket(channel):
+        return hasattr(channel, 'name') and (channel.name.startswith(('ticket-', 'sug-'))
+            or getattr(channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS)
 
     @app_commands.command(name="manual", description="Apaga la IA en este ticket para hablar manualmente con el cliente")
     @app_commands.default_permissions(administrator=True) # Exclusivo para admins
@@ -585,326 +601,221 @@ class Tickets(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or message.content.startswith('/'):
+        if message.author.bot or message.content.startswith('/') or not self._is_ticket(message.channel):
+            return
+        async with self._ticket_lock(message.channel.id):
+            try:
+                await self._handle_ticket_message(message)
+            except Exception as exc:
+                print(f"[Ticket {message.channel.id}] {type(exc).__name__}")
+                await self._request_manual_review(message.channel,
+                    "No pude completar el procesamiento. Conservamos el caso para revisión; no vuelvas a pagar.")
+
+    async def _handle_ticket_message(self, message):
+        await self._update_ticket_activity(message)
+        async with self.bot.pool.acquire(timeout=10) as conn:
+            ticket = await conn.fetchrow("SELECT * FROM tickets WHERE channel_id=$1", message.channel.id)
+        if not ticket:
+            raise RuntimeError("Ticket sin registro")
+        is_staff = message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator
+        if ticket['estado'] == 'pausado' or is_staff:
+            return
+        if ticket['user_id'] and ticket['user_id'] != message.author.id:
+            await message.reply("Este ticket pertenece a otro usuario. Abrí tu propio ticket para comprar.")
             return
 
-        # Escudo de escucha flexible: Soporta tanto canales ticket- como sug- y filtros de categoría
-        es_canal_valido = hasattr(message.channel, 'name') and (
-            message.channel.name.startswith("ticket-") or 
-            message.channel.name.startswith("sug-") or 
-            getattr(message.channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS
-        )
-        if not es_canal_valido:
-            return
-
-        # Verificamos estado manual
-        try:
-            async with self.bot.pool.acquire(timeout=5.0) as conn:
-                estado_ticket = await conn.fetchval("SELECT estado FROM tickets WHERE channel_id = $1", message.channel.id)
-                if estado_ticket == 'pausado':
-                    return 
-        except Exception:
-            pass
-
-        # --- LÓGICA DE MENCIONES ---
-        mencion_admin = f"<@{self.mi_id}>" in message.content or f"<@!{self.mi_id}>" in message.content
-        if self.bot.user.mentioned_in(message) or mencion_admin:
-            await message.reply("¡Hola! Estoy acá para darte soporte inmediato. ¿Qué duda o inconveniente tenés?")
-            return
-
-        # --- ESCUDO ANTI-SPAM GLOBAL ---
         patron_invitacion = r"(discord\.(gg|io|me|li|com\/invite)|discordapp\.com\/invite)\/([a-zA-Z0-9\-]+)"
         if re.search(patron_invitacion, message.content, re.IGNORECASE):
             await message.delete()
-            if message.author.id != FABRIZIO_ID:
-                try:
-                    await message.author.ban(reason="Spam de invitaciones detectado en ticket.")
-                    await message.channel.send(f"🚨 **Sistema de Seguridad**: Usuario {message.author.name} baneado permanentemente por spam de invitaciones.")
-                    print(f"🔨 [BAN] {message.author.name} ({message.author.id}) por link de invitación.")
-                    return 
-                except discord.Forbidden:
-                    await message.channel.send("⚠️ No tengo permisos para banear a este usuario, pero borré el link.")
-                    return
-
-        # Registrar actividad y actualizar timestamp
-        await self._update_ticket_activity(message)
-
-        # --- INTERCEPCIÓN DE CLÁUSULA DE CANJE DE RECOMPENSAS (ANTI-IA DESTRUCCIÓN) ---
-        contenido_limpio = message.content.strip().lower()
-        if "canjear" in contenido_limpio and "puntos" in contenido_limpio:
-            await message.reply(f"¡Perfecto! Veo que querés realizar el intercambio de tus puntos acumulados por una petición única de modelo. 💎\nPor favor, aguardá un momento a que <@{FABRIZIO_ID}> revise la disponibilidad de la chica solicitada. Si todo está correcto, procesará el descuento manual de tus 30 puntos.")
+            await message.author.ban(reason="Spam de invitaciones detectado en ticket.")
             return
-
-        # Intercepción asincrónica de comprobantes (Foto o PDF)
-        has_valid_attachment = any(att.content_type and (att.content_type.startswith('image/') or att.content_type == 'application/pdf') for att in message.attachments)
-        if message.attachments and has_valid_attachment:
+        if any(attachment_mime(att) for att in message.attachments):
             await self.handle_receipt_image(message)
             return
-
-        # Respuestas rápidas locales
-        if contenido_limpio in RESPUESTAS_PREDEFINIDAS:
-            await message.reply(RESPUESTAS_PREDEFINIDAS[contenido_limpio])
+        if "canjear" in message.content.lower() and "puntos" in message.content.lower():
+            await message.reply(f"¡Perfecto! <@{FABRIZIO_ID}> revisará la disponibilidad y el canje de tus 30 puntos.")
             return
-
-        # Flujo continuo del Chatbot conversacional
+        if await self._handle_pending_purchase(message):
+            return
+        if self.bot.user.mentioned_in(message) or any(u.id == self.mi_id for u in message.mentions):
+            await message.reply(f"<@{FABRIZIO_ID}>, el cliente necesita ayuda en este ticket.")
+            return
+        content = message.content.strip().lower()
+        if content in RESPUESTAS_PREDEFINIDAS:
+            await message.reply(RESPUESTAS_PREDEFINIDAS[content])
+            return
         await self.handle_support_query(message)
 
-    async def _update_ticket_activity(self, message: discord.Message):
-        channel_id = message.channel.id
-        user_id = message.author.id
+    async def _update_ticket_activity(self, message):
+        # Una respuesta de administración no cambia el dueño del ticket.
+        staff = message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator
+        owner_id = None if staff else message.author.id
+        async with self.bot.pool.acquire(timeout=10) as conn:
+            async with conn.transaction():
+                if owner_id:
+                    await conn.execute("INSERT INTO usuarios (user_id) VALUES ($1) ON CONFLICT DO NOTHING", owner_id)
+                await conn.execute("""INSERT INTO tickets (channel_id, user_id, estado, ultimo_mensaje, hablo)
+                    VALUES ($1,$2,'abierto',CURRENT_TIMESTAMP,TRUE)
+                    ON CONFLICT (channel_id) DO UPDATE SET ultimo_mensaje=CURRENT_TIMESTAMP, hablo=TRUE,
+                    user_id=CASE WHEN tickets.user_id IS NULL OR tickets.user_id=0
+                        THEN EXCLUDED.user_id ELSE tickets.user_id END""", message.channel.id, owner_id)
+
+    async def _requested_purchase(self, message):
+        desired = requested_roles(message.content)
+        if desired:
+            return desired
+        # Solo mensajes del comprador y en orden de más reciente a más antiguo.
         try:
-            async with self.bot.pool.acquire(timeout=5.0) as conn:
-                await conn.execute("INSERT INTO usuarios (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", user_id)
-                query = """
-                    INSERT INTO tickets (channel_id, user_id, estado, ultimo_mensaje, hablo)
-                    VALUES ($1, $2, 'abierto', CURRENT_TIMESTAMP, TRUE)
-                    ON CONFLICT (channel_id) DO UPDATE 
-                    SET ultimo_mensaje = CURRENT_TIMESTAMP, hablo = TRUE, user_id = EXCLUDED.user_id
-                """
-                await conn.execute(query, channel_id, user_id)
-        except Exception as e:
-            print(f"❌ [DB Error] No se pudo actualizar actividad de ticket {channel_id}: {e}")
+            async for previous in message.channel.history(limit=20, before=message):
+                if previous.author.id == message.author.id:
+                    desired = requested_roles(previous.content)
+                    if desired:
+                        return desired
+        except discord.HTTPException:
+            print(f"[Compra {message.channel.id}] No se pudo consultar el historial")
+        return ()
 
-    async def handle_receipt_image(self, message: discord.Message):
-        attachment = next((a for a in message.attachments if a.content_type.startswith('image/') or a.content_type == 'application/pdf'), None)
-        if not attachment:
-            return
-            
-        advertencia = await message.channel.send("⏳ **Auditoría IA**: Analizando comprobante de pago...")
-        es_sugerencia = (getattr(message.channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS) or message.channel.name.startswith("sug-")
-        ch_id = message.channel.id
-
+    async def _request_manual_review(self, channel, reason):
         try:
-            image_data = await attachment.read()
-            image_parts = [{"mime_type": attachment.content_type, "data": image_data}]
+            async with self.bot.pool.acquire(timeout=10) as conn:
+                await conn.execute("""INSERT INTO tickets (channel_id, conservar) VALUES ($1,TRUE)
+                    ON CONFLICT (channel_id) DO UPDATE SET conservar=TRUE""", channel.id)
+        except Exception as exc:
+            print(f"[Protección revisión {channel.id}] {type(exc).__name__}")
+        try:
+            await channel.send(f"🔔 <@{FABRIZIO_ID}> {reason}")
+        except discord.HTTPException as exc:
+            print(f"[Aviso revisión {channel.id}] {type(exc).__name__}")
 
-            historial = []
-            try:
-                async for msg in message.channel.history(limit=5, before=message):
-                    if not msg.author.bot:
-                        historial.append(f"{msg.author.name}: {msg.content}")
-            except Exception as e:
-                print(f"⚠️ [Historial Warn] Error leyendo historial en receipt: {e}")
-            
-            contexto = "\n".join(historial)
-            
-            if es_sugerencia:
-                prompt = f"""
-Contexto reciente del chat:
-{contexto}
-
-SOS UN AUDITOR FINANCIERO ESTRICTO. Analizá esta imagen o PDF para validar si es un comprobante de transferencia COMPLETADO (ej: Mercado Pago, Banco, PayPal) para la PETICIÓN ÚNICA DE MODELO de Tito Calderón.
-REGLA CRÍTICA Y ESTRICTA: Devues verificar OBLIGATORIAMENTE que el destinatario de la transferencia sea 'Fabrizio Giovanni Cocca Ducay' (o Fabrizio Cocca), O que el correo destinatario sea 'sesarjavier28@gmail.com' (para el caso de PayPal). Si es otra persona, marca "es_comprobante": false.
-REGLA BANCARIA ARS: Si la moneda es pesos (ARS), debes validar obligatoriamente que el banco o entidad financiera de destino/recepción sea estrictamente 'Uala Bank S.A.U' (o Ualá). Si el comprobante muestra que fue enviado a 'Mercado Pago' u otra entidad como destino, se trata de una plantilla falsa; marca automáticamente "es_comprobante": false de forma silenciosa.
-REGLA ANTI-DUPLICADOS: Si detectás que el usuario envía imágenes clonadas con el mismo número de operación o exactamente la misma hora/minuto en el historial, marca "es_comprobante": false.
-REGLA PAYPAL MONEDA EXTRANJERA (BIMONETARIO): Si la imagen o PDF corresponde a un recibo de PayPal emitido en una divisa local extranjera (como Pesos Mexicanos MXN, Pesos Chilenos CLP, Euros EUR, etc.), debes buscar obligatoriamente en todo el texto del documento el desglose de conversión o el valor neto equivalente reflejado en Dólares (USD) (por ejemplo: "$4.17 USD" o "$4.00 USD" al lado de "$80.00 MXN"). Si encuentras que este equivalente neto convertido a USD cumple con nuestro costo fijo de $4 USD, debes considerarlo válido y marcar "valido": true, "moneda": "USD" y asignar a "monto" el valor flotante neto en USD hallado.
-REGLA 1: Buscá evidencia de que el pago finalizó (ej: "Transferencia exitosa", "Pago realizado").
-REGLA 2: El costo de la sugerencia es exactamente $4000 ARS o $4 USD. Si el monto coincide o supera este valor, marca "valido": true. Caso contrario, marca "valido": false.
-REGLA DETECCIÓN PLATAFORMA (metodo_pago): Debes identificar qué plataforma de cobro se usó en el comprobante. Devuelve en el campo "metodo_pago" estrictamente la cadena "paypal", "binance", "uala" o "mercadopago" según corresponda de forma de identificarlo analizando los textos o logos. Si no se puede identificar o es una transferencia de pesos normal, devuelve "otro".
-
-Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses markdown ni comillas invertidas):
-{{
-  "es_comprobante": true_o_false,
-  "monto": float,
-  "moneda": "ARS_o_USD",
-  "rol_detectado": "Sugerencia",
-  "valido": true_o_false,
-  "diferencia": float,
-  "necesita_preguntar": false,
-  "metodo_pago": "paypal_o_binance_o_uala_o_mercadopago_o_otro"
-}}
-"""
-            else:
-                prompt = f"""
-Contexto reciente del chat (puede contener el rol deseado o aclarar montos parciales):
-{contexto}
-
-SOS UN AUDITOR FINANCIERO ESTRICTO. Analizá esta imagen o PDF para validar si es un comprobante de transferencia COMPLETADO (ej: Mercado Pago, Banco, PayPal) para la auditoría de Tito Calderón.
-REGLA CRÍTICA Y ESTRICTA: Debes verificar OBLIGATORIAMENTE que el destinatario de la transferencia sea 'Fabrizio Giovanni Cocca Ducay' (o Fabrizio Cocca), O que el correo destinatario sea 'sesarjavier28@gmail.com' (para el caso de PayPal). Si logras leer el nombre o correo del destinatario y es otra persona (por ejemplo, le están transfiriendo a un amigo u otro nombre), marca "es_comprobante": false.
-REGLA BANCARIA ARS CRÍTICA: Si la transferencia es en pesos (ARS), debes verificar obligatoriamente que el banco o entidad receptora de destino sea estrictamente 'Uala Bank S.A.U' (o Ualá). Si la imagen indica que el destino receptor es 'Mercado Pago' u otra entidad diferente, es una falsificación de plantilla; marca automáticamente "es_comprobante": false de forma silenciosa.
-REGLA ANTI-DUPLICADOS: Si en el contexto o imágenes detectás el mismo número de operación, ID de transacción o exactamente la misma hora y minuto repetida (envíos clonados), marca "es_comprobante": false.
-REGLA PAYPAL MONEDA EXTRANJERA (BIMONETARIO): Si el comprobante corresponde a un recibo de PayPal emitido en una divisa de cuenta local extranjera (por ejemplo: MXN, CLP, EUR, etc.), tienes la obligación estricta de buscar en el documento el desglose secundario o la equivalencia neta final en Dólares (USD) (por ejemplo, "$2.17 USD", "$4.50 USD", etc.). Compara ese valor neto convertido a USD contra nuestros precios y combos fijos en dólares. Si coincide o supera el precio del rango o combo solicitado, marca "valido": true, "moneda": "USD" y asigna a "monto" el valor flotante neto correspondiente en USD.
-REGLA 1: Buscá evidencia de que el pago finalizó (ej: "Transferencia exitosa", "Pago realizado"). Ignorá capturas de 'pre-transferencia' o pantallas de confirmación sin ejecutar.
-REGLA 2: Si el formato numérico usa coma para miles (ej 4,700.00), convertilo a un número limpio (4700).
-REGLA 3 DE MONTO RANDOM: 
-- Si el monto NO coincide exactamente con un rango o combo, pero el usuario ESPECIFICÓ uno en el contexto, validalo contra ese.
-- Si el monto es random y el usuario NO especificó qué quería, devolvé 'necesita_preguntar': true.
-REGLA 4 (PRECIOS EXACTOS Y COMBOS): Compará el monto pagado con nuestros precios estrictos:
-- Diamante: $4700 ARS / $4.5 USD
-- Oro: $4200 ARS / $4 USD
-- Plata: $2200 ARS / $2 USD
-- Diamante + Oro: $8900 ARS / $8.5 USD
-- Diamante + Plata: $6900 ARS / $6.5 USD
-- Oro + Plata: $6400 ARS / $6 USD
-- LOS 3 RANGOS JUNTOS (Todos): $11100 ARS / $10.5 USD
-REGLA 5: TUS DATOS DE COBRO (NUNCA INVENTES OTROS):
-- Alias: LENGUA.LUJOSA.TELAR
-- CBU: 3840200500000026286680
-- PayPal (USD): sesarjavier28@gmail.com
-- Binance Pay ID (USDT): 552346130
-- Titular: Fabrizio Giovanni Cocca Ducay (o Fabrizio Cocca)
-REGLA 6: RESPUESTAS CORTAS: Respondé SIEMPRE a lo que se te pregunta y pide. Sé directo, servicial y al grano. No uses lenguaje robótico ni des discursos largos.
-REGLA 7: DURACIÓN DE LOS RANGOS: Los rangos son PERMANENTES y de por vida. NUNCA expiran ni requieren renovación.
-REGLA 8 (FORMATO DE COMBINACIONES): En el JSON, para la key "rol_detectado", si el usuario pagó por un combo, DEBES separar los roles estrictamente por comas (Ejemplo: "Diamante, Oro", "Diamante, Plata", "Oro, Plata" o "Todos"). NUNCA uses "y" ni "+". Si es uno solo, pones el nombre solo.
-REGLA DETECCIÓN PLATAFORMA (metodo_pago): Debes identificar qué plataforma de cobro se usó en el comprobante. Devuelve en el campo "metodo_pago" estrictamente la cadena "paypal", "binance", "uala" o "mercadopago" según corresponda analizando los textos o logos. Si no se puede identificar o es una transferencia de pesos normal, devuelve "otro".
-
-Devolve ÚNICAMENTE un objeto JSON válido con la siguiente estructura (NO uses markdown ni comillas invertidas):
-{{
-  "es_comprobante": true_o_false,
-  "monto": float,
-  "moneda": "ARS_o_USD",
-  "rol_detectado": "Diamante, Oro, Plata, Todos, o combinaciones con coma",
-  "valido": true_o_false,
-  "diferencia": float,
-  "necesita_preguntar": true_o_false,
-  "metodo_pago": "paypal_o_binance_o_uala_o_mercadopago_o_otro"
-}}
-"""
-
-            # --- INTERCEPCIÓN PROTOCOLO DE CONMUTACIÓN DE LLAVES Y MODELOS ---
-            text = await self._generate_content_with_rotation(prompt, image_parts)
-            
-            text = text.strip()
-            if text.startswith("```json"):
-                text = text[7:-3].strip()
-            elif text.startswith("```"):
-                text = text[3:-3].strip()
-                
-            datos = json.loads(text)
-
-            # --- ARQUITECTURA DEFENSIVA: DISYUNTOR Y FILTRO DE FALLOS SECUENCIALES ---
-            rol = datos.get("rol_detectado")
-            valido_bool = datos.get("valido", False)
-            es_comprobante_bool = datos.get("es_comprobante", False)
-            necesita_preguntar_bool = datos.get("necesita_preguntar", False)
-            
-            # Chequeo estricto de éxito de la transacción
-            audit_exitosa = es_comprobante_bool and valido_bool and not necesita_preguntar_bool
-            if not es_sugerencia and audit_exitosa:
-                if not rol or (rol not in ROLES and rol != "Todos" and "," not in rol):
-                    audit_exitosa = False
-
-            if not audit_exitosa:
-                self.fallos_tickets[ch_id] = self.fallos_tickets.get(ch_id, 0) + 1
-                total_fallos = self.fallos_tickets[ch_id]
-                
-                # UMBRAL CRÍTICO 5: Modo Manual Forzado con Mención Push Administrativa
-                if total_fallos >= 5:
-                    try:
-                        async with self.bot.pool.acquire(timeout=5.0) as conn:
-                            await conn.execute("UPDATE tickets SET estado = 'pausado' WHERE channel_id = $1", ch_id)
-                        await message.channel.send(content=f"🔔 <@{FABRIZIO_ID}> El búnker detectó {total_fallos} fallos consecutivos de auditoría automática en este ticket. Pasando control a revisión manual.")
-                        await advertencia.edit(content="🛑 **Modo Manual Automático**: Se alcanzó el límite de intentos automáticos de validación. Pasamos tu caso a revisión manual de forma inmediata. El administrador ya fue notificado y revisará tu transacción a la brevedad. Quedate tranquilo, tu compra está segura.")
-                    except Exception as db_err:
-                        print(f"❌ Error al pausar ticket por fallos acumulados: {db_err}")
-                    return
-                
-                # UMBRAL CONTROL DE DAÑOS 3 y 4: Tip Inteligente de Divisas
-                elif total_fallos >= 3:
-                    await advertencia.edit(content="⚠️ **Aviso de Soporte**: Seguimos sin poder validar el archivo de forma automática. Si estás realizando tu pago por PayPal desde fuera de Argentina, recordá que el bot busca estrictamente el reflejo del monto neto convertido a Dólares (USD). Por favor, asegúrate de enviar la captura extendida completa donde figure la conversión limpia a USD para que pueda ser detectada.")
-                    return
-                
-                # UMBRAL ESTÁNDAR 1 y 2: Respuestas Profesionales Rediseñadas
-                else:
-                    if not es_comprobante_bool:
-                        await advertencia.edit(content="❌ **Auditoría Fallida**: El sistema no pudo procesar este archivo de forma automática. Asegurate de que la captura de pantalla o PDF sea nítida, esté completa y muestre claramente el destinatario, el monto final y el número de operación.")
-                    elif necesita_preguntar_bool:
-                        await advertencia.edit(content=f"🤔 **Monto no reconocido**: Detectamos un pago de **{datos.get('monto')} {datos.get('moneda')}**, pero no coincide con ningún rango exacto y no especificaste cuál querías en el chat. ¿Podés aclarar qué rangos estás comprando?")
-                    elif not valido_bool:
-                        if es_sugerencia:
-                            await advertencia.edit(content=f"⚠️ **Comprobante Insuficiente**\nEl pago detectado de **{datos['monto']} {datos['moneda']}** no es suficiente para procesar la petición.\nEl costo fijo es de $4000 ARS / $4 USD. Por favor, abona el resto y envía el comprobante completo.")
+    async def handle_receipt_image(self, message):
+        attachments = [a for a in message.attachments if attachment_mime(a)]
+        warning = await message.channel.send("⏳ Estoy leyendo tus comprobantes. No hace falta que vuelvas a pagar.")
+        suggestion = message.channel.name.startswith('sug-') or message.channel.category_id == ID_CATEGORIA_SUGERENCIAS
+        try:
+            parts, digests, known, seen = [], [], [], set()
+            total_size = 0
+            for attachment in attachments:
+                if getattr(attachment, 'size', 0) + total_size > 18 * 1024 * 1024:
+                    raise ValueError("Los adjuntos superan 18 MB; requiere revisión manual")
+                data = await attachment.read()
+                total_size += len(data)
+                if total_size > 18 * 1024 * 1024:
+                    raise ValueError("Los adjuntos superan 18 MB; requiere revisión manual")
+                digest = hashlib.sha256(data).hexdigest()
+                if digest in seen:
+                    continue
+                seen.add(digest)
+                existing = await self.payments.known(digest)
+                if existing:
+                    known.append(existing)
+                    continue
+                parts.append({'mime_type': attachment_mime(attachment), 'data': data})
+                digests.append(digest)
+            issues, saved = [], []
+            if parts:
+                text = await self._generate_content_with_rotation(vision_prompt(len(parts)), parts)
+                receipts, issues = parse_receipts(text, len(parts))
+                if suggestion:
+                    receipts_ok = []
+                    for receipt in receipts:
+                        if receipt.amount >= (4000 if receipt.currency == 'ARS' else 4):
+                            receipts_ok.append(receipt)
                         else:
-                            diferencia = float(datos.get("diferencia", 0.0))
-                            faltante = abs(diferencia)
-                            await advertencia.edit(content=f"⚠️ **Comprobante Insuficiente**\nEl pago detectado de **{datos['monto']} {datos['moneda']}** no es suficiente para el rol solicitado.\nFaltan **{faltante} {datos['moneda']}**. Por favor, abona el resto y envía el nuevo comprobante.")
-                    else:
-                        await advertencia.edit(content=f"⚠️ **Atención**: Comprobante de {datos.get('monto', 0)} {datos.get('moneda', '')} verificado, pero no alcanza o no concuerda para un rol específico, aclara que rangos estas comprando o <@{FABRIZIO_ID}> revisalo manualmente.")
-                    return
-
-            # Si la auditoría fue exitosa, limpiamos el contador de fallos del canal
-            self.fallos_tickets.pop(ch_id, None)
-            diferencia = float(datos.get("diferencia", 0.0))
-
-            # --- GESTIÓN DE AUDITORÍA EN CANAL DE SUGERENCIAS ---
-            if es_sugerencia:
-                msg_exito = f"✅ **¡Pago de Petición Verificado con Éxito!**\nEl bot detectó e impactó un pago correcto de **{datos['monto']} {datos['moneda']}**."
-                await advertencia.edit(content=msg_exito)
-                
-                # Enlace estructurado a pagos real de NeonDB
-                try:
-                    metodo = datos.get("metodo_pago", "paypal").lower()
-                    async with self.bot.pool.acquire(timeout=5.0) as conn:
-                        await conn.execute(
-                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago) VALUES ($1, $2, $3, $4, 'Sugerencia', $5)",
-                            message.author.id, message.channel.id, float(datos.get('monto', 0)), datos.get('moneda', 'ARS'), metodo
-                        )
-                except Exception as e:
-                    print(f"❌ [DB Error] No se pudo registrar el pago en la tabla 'pagos': {e}")
-                
-                # Mensaje nuevo para generar notificación push en Discord
-                await message.channel.send(content=f"🔔 <@{FABRIZIO_ID}> ¡Petición de canal recibida! Vení al ticket a ver qué red social de la modelo envió el usuario.")
-                
-                await self._marcar_ticket_completado(message.channel.id)
-                return
-
-            # --- GESTIÓN DE AUDITORÍA EN CANAL DE RANGOS ---
-            try:
-                roles_a_dar = []
-                if rol == "Todos":
-                    roles_a_dar = [message.guild.get_role(r["id"]) for r in ROLES.values() if message.guild.get_role(r["id"])]
-                elif "," in rol:
-                    roles_split = rol.split(",")
-                    for rs in roles_split:
-                        rs = rs.strip()
-                        if rs in ROLES:
-                            role_obj = message.guild.get_role(ROLES[rs]["id"])
-                            if role_obj: roles_a_dar.append(role_obj)
+                            issues.append(f"archivo {receipt.index + 1}: requiere revisar el importe de la petición")
+                    receipts = receipts_ok
+                saved = await self.payments.save(message, receipts, digests, suggestion)
+            related = [r for r in [*known, *saved] if r and r['user_id'] == message.author.id and r['ticket_id'] == message.channel.id]
+            if len(related) != len(known) + len(saved):
+                issues.append("hay un comprobante que ya se registró en otra compra")
+            if suggestion:
+                if related:
+                    await self._marcar_ticket_completado(message.channel.id)
+                    await warning.edit(content="✅ Comprobante de petición registrado. Administración continuará con tu pedido.")
+                    await message.channel.send(f"🔔 <@{FABRIZIO_ID}> Hay una petición con comprobante en este ticket.")
                 else:
-                    role_id = ROLES[rol]["id"]
-                    role_obj = message.guild.get_role(role_id)
-                    if role_obj: roles_a_dar.append(role_obj)
-                
-                if not roles_a_dar:
-                    await advertencia.edit(content=f"❌ **Error de Sistema**: El rol no existe o no está configurado correctamente en el servidor. Avisa a un administrador.")
-                    return
+                    await warning.edit(content="No pude completar la lectura. Ya pedí revisión; no vuelvas a pagar.")
+            else:
+                desired = await self._requested_purchase(message)
+                handled = await self._handle_pending_purchase(message, desired)
+                if handled:
+                    await warning.edit(content="Lectura terminada. El estado de tu compra figura en el mensaje de abajo.")
+                elif related:
+                    await warning.edit(content="✅ Este comprobante ya estaba registrado. No se volvió a sumar ni a cobrar.")
+                else:
+                    await warning.edit(content="No pude completar la lectura. Ya pedí revisión; no vuelvas a pagar.")
+            if issues or not related:
+                await self._request_manual_review(message.channel,
+                    "Necesitamos revisar los comprobantes: " + "; ".join(issues or ['lectura incompleta']) + ". No vuelvas a pagar.")
+        except Exception as exc:
+            print(f"[Comprobantes {message.channel.id}] {type(exc).__name__}")
+            await warning.edit(content="No pude terminar el procesamiento. No significa que tu pago sea incorrecto y no tenés que pagar otra vez.")
+            await self._request_manual_review(message.channel, "Revisá los comprobantes y la entrega de este ticket, por favor.")
 
-                await message.author.add_roles(*roles_a_dar, reason="Aprobado por Auditoría IA")
-                
-                msg_exito = f"✅ **¡Pago Verificado con Éxito!**\nSe te ha otorgado el rol **{rol}** automáticamente."
-                await advertencia.edit(content=msg_exito)
-                
-                # Enlace estructurado a pagos real de NeonDB
-                try:
-                    metodo = datos.get("metodo_pago", "paypal").lower()
-                    async with self.bot.pool.acquire(timeout=5.0) as conn:
-                        monto_num = float(datos.get('monto', 0))
-                        moneda_str = datos.get('moneda', 'ARS')
-                        await conn.execute(
-                            "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago) VALUES ($1, $2, $3, $4, $5, $6)",
-                            message.author.id, message.channel.id, monto_num, moneda_str, rol, metodo
-                        )
-                except Exception as e:
-                    print(f"❌ [DB Error] No se pudo registrar el pago en la tabla 'pagos': {e}")
-                
-                # Mensaje nuevo para generar notificación push en Discord
-                await message.channel.send(content=f"🔔 <@{FABRIZIO_ID}> auditoría automática completada.")
-                
-                await self._marcar_ticket_completado(message.channel.id)
-                
-            except discord.Forbidden:
-                await advertencia.edit(content="❌ **Error de Permisos**: No tengo los permisos de jerarquía necesarios para asignar el rol.")
+    async def _handle_pending_purchase(self, message, desired=None):
+        desired = requested_roles(message.content) if desired is None else desired
+        result = await self.payments.prepare(message.channel.id, message.author.id, desired)
+        if result.get('empty'):
+            return False
+        if result.get('delivery'):
+            await self._fulfill_delivery(result['delivery'], message.channel, message.guild)
+        else:
+            totals = ' + '.join(f"{amount} {currency}" for currency, amount in result['totals'].items())
+            if result['missing'] is not None:
+                await message.channel.send(f"Registré {totals} para {', '.join(result['desired'])}. "
+                    f"Faltan {result['missing']} {next(iter(result['totals']))}. Si ya enviaste el resto, adjuntá ese comprobante; no repitas el pago.")
+            else:
+                await message.channel.send(f"Registré {totals}. Decime qué rangos querés: Diamante, Oro, Plata o los tres. Los comprobantes quedan guardados.")
+        return True
 
-        except TimeoutError: 
-            await advertencia.edit(content="⏳ **Servidores saturados**: ¡Recibimos tu comprobante! Pero los servidores de Google están bajo mucha carga ahora mismo. **No es un error de tu pago**. Por favor, volvé a subir la foto en 1 o 2 minutos para que el bot pueda procesarla.")
-        except json.JSONDecodeError:
-            print(f"❌ [IA JSON Error] Texto recibido: {text}")
-            await advertencia.edit(content="❌ **Error de Procesamiento**: La IA dio una respuesta ilegible. Espera a un administrador.")
-        except GoogleAPIError as e:
-            print(f"❌ [Google API Error]: {e}")
-            await advertencia.edit(content="⚠️ **Servicio Interrumpido**: Problemas al contactar a la IA (Límite de cuota o servicio caído).")
-        except Exception as e:
-            print(f"❌ [IA Error Inesperado]: {e}")
-            await advertencia.edit(content="❌ Ocurrió un error inesperado al procesar el comprobante.")
+    async def _fulfill_delivery(self, delivery, channel, guild):
+        if delivery['entrega_estado'] == 'manual':
+            await channel.send(f"Tu comprobante está registrado. <@{FABRIZIO_ID}> tiene que revisar la entrega; no vuelvas a pagar.")
+            return
+        attempts = await self.payments.attempt(delivery['entrega_id'])
+        if attempts is None:
+            return
+        try:
+            names = delivery['roles_asignados']
+            roles = [guild.get_role(ROLES[name]['id']) for name in names]
+            if not all(roles):
+                raise RuntimeError("Falta configurar un rol")
+            member = guild.get_member(delivery['user_id']) or await guild.fetch_member(delivery['user_id'])
+            await member.add_roles(*roles, reason="Compra registrada mediante comprobantes")
+            # Se comprueba la entrega real, incluso si Discord asignó solo parte del combo.
+            member = await guild.fetch_member(delivery['user_id'])
+            if not {r.id for r in roles}.issubset({r.id for r in member.roles}):
+                raise RuntimeError("Discord no confirmó todos los roles")
+            await self.payments.finish(delivery['entrega_id'], channel.id)
+        except Exception as exc:
+            print(f"[Entrega {delivery['entrega_id']}] {type(exc).__name__}")
+            try:
+                await self.payments.failed(delivery['entrega_id'], attempts)
+            finally:
+                await self._request_manual_review(channel,
+                    "El comprobante está registrado, pero falta confirmar todos los rangos. "
+                    "La entrega queda pendiente y se reintentará hasta tres veces. No vuelvas a pagar.")
+            return
+        try:
+            await channel.send(f"✅ <@{delivery['user_id']}> Ya tenés los rangos **{', '.join(names)}**. "
+                               f"🔔 <@{FABRIZIO_ID}> Entrega completada a partir de los comprobantes.")
+        except discord.HTTPException:
+            print(f"[Entrega {delivery['entrega_id']}] Rangos confirmados; no se pudo enviar aviso")
+
+    @tasks.loop(minutes=5)
+    async def recover_deliveries(self):
+        try:
+            for delivery in await self.payments.recoverable():
+                guild = self.bot.get_guild(delivery['guild_id'])
+                channel = self.bot.get_channel(delivery['ticket_id'])
+                if guild and channel:
+                    async with self._ticket_lock(channel.id):
+                        await self._fulfill_delivery(delivery, channel, guild)
+        except Exception as exc:
+            print(f"[Recuperación de entregas] {type(exc).__name__}")
+
+    @recover_deliveries.before_loop
+    async def before_recovery(self):
+        await self.bot.wait_until_ready()
 
     async def _marcar_ticket_completado(self, channel_id: int):
         query = "UPDATE tickets SET estado = 'completado' WHERE channel_id = $1"
@@ -970,7 +881,7 @@ REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
    • Si el usuario dice "ya pagué", "ya transferí", "dónde está mi rango", "no me llegó el rol", "¿por qué no me da el rol?", o similar, pero NO envió la imagen del comprobante en este chat, explícale con total claridad y amabilidad: "El sistema no se vincula automáticamente con tu cuenta bancaria. Para recibir tu rango, tenés que enviar acá al chat la foto o PDF clara de tu comprobante de pago para que el bot pueda auditar la imagen y entregarte el rol al instante."
    • Si (y solo si) ves en el HISTORIAL que el usuario efectivamente ya adjuntó la foto del comprobante y dice "ahí lo mandé", responde: "¡Buenísimo! El sistema automático de auditoría lo está analizando en este momento."
 5. ESTADO POST-VENTA (MEMORIA): Si en el HISTORIAL ves que el sistema ya validó el pago y dijo "Rol/es asignado/s" o "Pago Verificado con Éxito", TU OBJETIVO CAMBIÓ. NO vendas más ni pidas el comprobante. Dale la bienvenida al usuario, confirmale que su rol ya está activo y que disfrute del contenido.
-6. SEGURIDAD CRÍTICA (ZERO TRUST): TIENES TOTALMENTE PROHIBIDO usar el comando [GRANT_ROLE] basándote únicamente en la palabra del usuario. SOLO usalo si ves en el HISTORIAL que el sistema (el bot) ya validó físicamente una imagen y pidió aclarar el rango.
+6. Los rangos se asignan mediante el registro de comprobantes. Nunca generes comandos, etiquetas de entrega ni afirmes haber entregado rangos por tu cuenta.
 7. CONSULTAS DE DISPONIBILIDAD (REGLA CRÍTICA): Si (y solo si) el usuario pregunta por la disponibilidad de una modelo en específico (ej: "¿Tienen contenido de tal chica?", "Quiero ver a X"), explicale de forma servicial que al contar con más de 300 canales el catálogo es enorme. Decile que revise bien las listas de nombres en los rangos Oro y Diamante. Si comprueba que no está, aclarale que al adquirir el rango Oro o Diamante desbloqueará un canal exclusivo de peticiones donde, abonando un costo extra (de unos $4 USD actuales), puede solicitar que Tito Calderón busque e incorpore a esa modelo específica de forma privada. Prohibido mencionar esta opción de sugerencia o costo extra si el usuario no preguntó explícitamente por una chica.
 8. DIFERENCIAS Y ACCESO ESTRICTO ENTRE RANGOS (CERO TRASLAPE):
    • CADA RANGO ES TOTALMENTE INDEPENDIENTE: Comprar un rango ÚNICAMENTE da acceso a los canales de ese rango específico.
@@ -978,8 +889,7 @@ REGLAS DE NEGOCIO Y RESPUESTA (ESTRICTAS):
    • Plata ($2200 ARS / $2 USD): Rango más básico con acceso limitado de canales al fondo del servidor. NO otorga acceso a los canales extra (Novedades, Comunidad, Soporte, Peticiones de modelos, Votaciones, Guías).
    • Oro ($4200 ARS / $4 USD): Catálogo amplio de canales Oro y HABILITA el acceso completo a todos los canales extra (chat de comunidad, peticiones de chicas, votaciones, soporte, guías).
    • Diamante ($4700 ARS / $4.5 USD): El rango VIP supremo con entre 30 y 40 canales MÁS que Oro, con las modelos más exclusivas y premium seleccionadas por Tito Calderón. HABILITA todos los canales extra.
-INSTRUCCIÓN TÉCNICA (SOLO PARA ACLARAR RANGOS FALTANTES):
-Si (y solo si) un pago previo fue validado por el sistema en el historial PERO faltó aclarar el rango que cubría ese pago, incluye al FINAL de tu respuesta este comando exacto: [GRANT_ROLE: NombreDelRol] (reemplaza NombreDelRol por Diamante, Oro o Plata. Si compró un combo, ponelos separados por coma, ej: [GRANT_ROLE: Diamante, Oro]).
+Si el cliente aclara el rango, el sistema de compras comprueba el saldo registrado antes de entregarlo.
 
 Consulta actual del usuario: "{message.content}"
 """
@@ -987,49 +897,8 @@ Consulta actual del usuario: "{message.content}"
             async with message.channel.typing():
                 # --- INTERCEPCIÓN PROTOCOLO DE CONMUTACIÓN PARA EL CHATBOT ---
                 respuesta_texto = await self._generate_content_with_rotation(prompt)
-                await message.reply(respuesta_texto)
-
-                # Si estamos en un canal de sugerencia, anulamos la asignación de roles automatizada
-                if not es_sugerencia:
-                    # Lógica avanzada para otorgar múltiples roles desde la conversación si la IA da la orden
-                    ordenes_roles = re.findall(r"\[GRANT_ROLE:\s*([A-Za-z0-9_,\s]+)\]", respuesta_texto)
-                    
-                    if ordenes_roles:
-                        roles_a_dar = []
-                        nombres_roles_asignados = []
-                        
-                        for orden in ordenes_roles:
-                            # Soporte de roles separados por comas o por tags consecutivos
-                            roles_split = orden.split(",")
-                            for r_name in roles_split:
-                                r_name = r_name.strip()
-                                if r_name in ROLES:
-                                    role_obj = message.guild.get_role(ROLES[r_name]["id"])
-                                    if role_obj and role_obj not in roles_a_dar:
-                                        roles_a_dar.append(role_obj)
-                                        nombres_roles_asignados.append(r_name)
-                        
-                        if roles_a_dar:
-                            try:
-                                # Asignación múltiple en un solo empaquetado de Discord
-                                await message.author.add_roles(*roles_a_dar, reason="Aclaración de rango múltiple vía IA")
-                                roles_str = ", ".join(nombres_roles_asignados)
-                                await message.channel.send(f"✅ Sistema: Rol/es **{roles_str}** asignado/s tras aclaración.\n🔔 <@{FABRIZIO_ID}> auditoría manual/aclaración completada.")
-                                await self._marcar_ticket_completado(message.channel.id)
-
-                                # Registrar cada pago impactado en NeonDB de forma independiente (image_34f7af.png)
-                                try:
-                                    async with self.bot.pool.acquire(timeout=5.0) as conn:
-                                        for r_name in nombres_roles_asignados:
-                                            monto_estimado = ROLES[r_name]["ars"] 
-                                            await conn.execute(
-                                                "INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago) VALUES ($1, $2, $3, $4, $5, 'otro')",
-                                                message.author.id, message.channel.id, float(monto_estimado), "ARS", r_name
-                                            )
-                                except Exception as e:
-                                    print(f"❌ [DB Error] No se pudo registrar el pago aclarado en la tabla 'pagos': {e}")
-                            except discord.Forbidden:
-                                print(f"❌ Error de Jerarquía: El bot no tiene permisos suficientes para dar los roles: {nombres_roles_asignados}")
+                respuesta_texto = re.sub(r"\[GRANT_ROLE:[^\]]*\]", "", respuesta_texto).strip()
+                await message.reply(respuesta_texto or "Decime qué rango necesitás y revisamos tu compra.")
 
         except asyncio.TimeoutError:
             await message.reply("⚠️ **IA Congestionada**: Los servidores de Google están tardando en responder. Tu consulta es importante; por favor, intentá preguntar de nuevo en un instante.")
@@ -1044,156 +913,61 @@ Consulta actual del usuario: "{message.content}"
             else:
                 print(f"❌ [Discord HTTP Error]: {e}")
         except Exception as e:
-            print(f"❌ [IA Support Error]: {e}")
+            print(f"[IA Support Error] {type(e).__name__}")
+            await self._request_manual_review(message.channel, "No pude responder automáticamente. Administración continuará con tu consulta.")
 
-    # Tarea en loop cada 2 horas para limpieza de tickets (Ahorro de NeonDB)
+    async def _delete_ticket_if_eligible(self, channel, member_left=False):
+        """Todas las rutas de borrado usan la misma protección persistente y revalidan actividad."""
+        async with self._ticket_lock(channel.id):
+            async with self.bot.pool.acquire(timeout=10) as conn:
+                async with conn.transaction():
+                    ticket = await conn.fetchrow("SELECT * FROM tickets WHERE channel_id=$1 FOR UPDATE", channel.id)
+                    if not ticket or ticket['conservar']:
+                        return False
+                    pending = await conn.fetchval("""SELECT EXISTS (SELECT 1 FROM pagos WHERE ticket_id=$1
+                        AND entrega_estado IN ('pendiente','preparado','reintentar','manual'))""", channel.id)
+                    if pending:
+                        return False
+                    suggestion = channel.name.startswith('sug-') or channel.category_id == ID_CATEGORIA_SUGERENCIAS
+                    if suggestion and (ticket['hablo'] or ticket['estado'] == 'completado'):
+                        return False
+                    if not member_left:
+                        threshold = 3 if not ticket['hablo'] and ticket['estado'] == 'abierto' else 24
+                        activity = ticket['ultimo_mensaje']
+                        if activity.tzinfo is None:
+                            activity = activity.replace(tzinfo=datetime.timezone.utc)
+                        # Si no se puede consultar Discord, se conserva el canal.
+                        async for recent in channel.history(limit=20):
+                            if not recent.author.bot and recent.created_at > activity:
+                                activity = recent.created_at
+                        if (datetime.datetime.now(datetime.timezone.utc) - activity).total_seconds() < threshold * 3600:
+                            return False
+                    try:
+                        await channel.delete(reason="Cierre automático de ticket sin actividad ni entregas pendientes")
+                    except discord.NotFound:
+                        pass
+                    except discord.HTTPException:
+                        return False
+                    await conn.execute("DELETE FROM tickets WHERE channel_id=$1 AND conservar=FALSE", channel.id)
+                    return True
+
     @tasks.loop(hours=2)
     async def cleanup_tickets(self):
-        # Completados a las 24hs
-        query_completados = """
-            SELECT channel_id FROM tickets 
-            WHERE estado = 'completado' 
-            AND ultimo_mensaje <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
-        """
-        query_abandonados_3h = """
-            SELECT channel_id FROM tickets 
-            WHERE estado = 'abierto' AND hablo = FALSE
-            AND ultimo_mensaje <= CURRENT_TIMESTAMP - INTERVAL '3 hours'
-        """
-        # Inactivos a las 24hs (si habían hablado sin pagar)
-        query_abandonados_24h = """
-            SELECT channel_id FROM tickets 
-            WHERE estado IN ('abierto', 'pausado') AND hablo = TRUE
-            AND ultimo_mensaje <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
-        """
-        
         try:
-            async with self.bot.pool.acquire(timeout=15.0) as conn:
-                # 1. Limpiar completados (Solo Rangos, ignorando las Sugerencias pagadas)
-                records_comp = await conn.fetch(query_completados)
-                for record in records_comp:
-                    channel_id = int(record['channel_id'])
-                    channel = self.bot.get_channel(channel_id)
-                    
-                    # Fallback robusto por si el canal no está en la memoria RAM del bot
-                    if not channel:
-                        try:
-                            channel = await self.bot.fetch_channel(channel_id)
-                        except discord.NotFound:
-                            # Si el canal ya no existe en Discord, limpiamos la DB de una
-                            await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel_id)
-                            continue
-                        except Exception:
-                            channel = None
-
-                    if channel:
-                        es_sug = (channel.category_id == ID_CATEGORIA_SUGERENCIAS) or (hasattr(channel, 'name') and channel.name.startswith("sug-"))
-                        if es_sug:
-                            continue # Escudo: Si es sugerencia pagada/completada, no se borra jamás
-                        
-                        try:
-                            await channel.delete(reason="Limpieza automática: 24hs tras ticket de rango completado.")
-                            print(f"🗑️ [Limpieza] Canal de ticket de rango {channel_id} eliminado (24hs completado).")
-                        except discord.Forbidden:
-                            pass
-                        except discord.HTTPException:
-                            pass
-                    
-                    await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel_id)
-
-                # 2. Limpiar abandonados (3hs sin mensaje inicial - Aplica a TODOS si nadie habló)
-                records_aban3h = await conn.fetch(query_abandonados_3h)
-                for record in records_aban3h:
-                    channel_id = int(record['channel_id'])
-                    channel = self.bot.get_channel(channel_id)
-                    
-                    if not channel:
-                        try:
-                            channel = await self.bot.fetch_channel(channel_id)
-                        except discord.NotFound:
-                            await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel_id)
-                            continue
-                        except Exception:
-                            channel = None
-
-                    if channel:
-                        try: 
-                            await channel.delete(reason="Auto-Close: 3 horas de inactividad total desde creación.")
-                            print(f"🗑️ [Auto-Close] Ticket {channel_id} borrado por 3hs sin actividad inicial.")
-                        except discord.Forbidden:
-                            pass
-                        except discord.HTTPException:
-                            pass
-                    await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel_id)
-                    
-                # 3. Limpiar abandonados con habla (24hs inactividad - ¡AHORA CORREGIDO PARA SUGERENCIAS!)
-                records_aban24h = await conn.fetch(query_abandonados_24h)
-                for record in records_aban24h:
-                    channel_id = int(record['channel_id'])
-                    channel = self.bot.get_channel(channel_id)
-                    
-                    if not channel:
-                        try:
-                            channel = await self.bot.fetch_channel(channel_id)
-                        except discord.NotFound:
-                            await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel_id)
-                            continue
-                        except Exception:
-                            channel = None
-
-                    if channel:
-                        # BLINDAJE INYECTADO: Verificamos si pertenece al nicho de las chicas
-                        es_sug = (channel.category_id == ID_CATEGORIA_SUGERENCIAS) or (hasattr(channel, 'name') and channel.name.startswith("sug-"))
-                        if es_sug:
-                            continue # Escudo definitivo: Si el cliente habló en una sugerencia, queda vivo para siempre
-                        
-                        try: 
-                            await channel.delete(reason="Auto-Close: 24 horas de inactividad después de hablar.")
-                            print(f"🗑️ [Auto-Close] Ticket {channel_id} borrado por 24hs inactividad posterior.")
-                        except discord.Forbidden:
-                            pass
-                        except discord.HTTPException:
-                            pass
-                    await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel_id)
-                    
-                # 4. Barrido defensivo sobre canales reales de Discord para purgar tickets viejos de > 3hs sin registro
-                for guild in self.bot.guilds:
-                    for channel in guild.text_channels:
-                        es_ticket = channel.name.startswith("ticket-") or channel.name.startswith("sug-") or channel.category_id == ID_CATEGORIA_SUGERENCIAS
-                        if not es_ticket:
-                            continue
-                        
-                        es_sug = (channel.category_id == ID_CATEGORIA_SUGERENCIAS) or channel.name.startswith("sug-")
-                        if es_sug:
-                            continue
-                            
-                        import datetime
-                        edad_horas = (datetime.datetime.now(datetime.timezone.utc) - channel.created_at).total_seconds() / 3600.0
-                        if edad_horas >= 3.0:
-                            hablo_humano = False
-                            try:
-                                async for m in channel.history(limit=20):
-                                    if not m.author.bot:
-                                        hablo_humano = True
-                                        break
-                            except Exception:
-                                pass
-                            
-                            if not hablo_humano or edad_horas >= 24.0:
-                                try:
-                                    await channel.delete(reason="Auto-Close Sweep: Ticket abandonado por más de 3hs sin actividad.")
-                                    print(f"🗑️ [Auto-Close Sweep] Ticket {channel.name} ({channel.id}) eliminado ({edad_horas:.1f}hs).")
-                                except Exception as del_err:
-                                    print(f"❌ Error al borrar ticket en sweep {channel.id}: {del_err}")
-                                try:
-                                    await conn.execute("DELETE FROM tickets WHERE channel_id = $1", channel.id)
-                                except Exception:
-                                    pass
-                    
-        except asyncpg.PostgresError as e:
-            print(f"❌ [DB Error] en loop cleanup_tickets: {e}")
-        except Exception as e:
-            print(f"❌ [Error Inesperado] en loop cleanup_tickets: {e}")
+            async with self.bot.pool.acquire(timeout=15) as conn:
+                rows = await conn.fetch("""SELECT channel_id FROM tickets WHERE conservar=FALSE AND
+                    ((estado='abierto' AND hablo=FALSE AND ultimo_mensaje <= CURRENT_TIMESTAMP-INTERVAL '3 hours')
+                    OR (estado IN ('abierto','pausado','completado') AND ultimo_mensaje <= CURRENT_TIMESTAMP-INTERVAL '24 hours'))""")
+            for row in rows:
+                channel = self.bot.get_channel(row['channel_id'])
+                if not channel:
+                    try:
+                        channel = await self.bot.fetch_channel(row['channel_id'])
+                    except discord.NotFound:
+                        continue
+                await self._delete_ticket_if_eligible(channel)
+        except Exception as exc:
+            print(f"[Limpieza tickets] {type(exc).__name__}")
 
     @cleanup_tickets.before_loop
     async def before_cleanup(self):

@@ -1,55 +1,46 @@
-# Asistente de Operaciones y Auditoría Financiera
+# Asistente General de Discord
 
-Agente autónomo desarrollado en Python para integrarse con plataformas de mensajería en tiempo real y bases de datos PostgreSQL (NeonDB). Automatiza la gestión de canales de soporte, la fidelización de usuarios y la validación financiera de transacciones mediante Inteligencia Artificial (LLM).
+Bot de Python/discord.py para atender tickets de Ticket Tool, leer comprobantes con Gemini, entregar rangos permanentes y registrar ventas en PostgreSQL/Neon. Los descargadores de imágenes y videos son aplicaciones independientes.
 
----
+## Comprobantes y entrega
 
-## 🚀 Características Clave
+- Lee todas las imágenes/PDF de cada mensaje. Acepta diferencias de diseño, recortes, banco receptor y ausencia de fecha o número de operación; Wilobank es válido. Requiere un importe legible en ARS/USD y coincidencia del titular o cuenta de destino.
+- Gemini extrae datos. Python comprueba precios, combinaciones y saldo con Decimal. Las órdenes textuales del modelo no entregan roles.
+- Registra los comprobantes antes de asignar acceso. Acumula pagos del mismo comprador y ticket, también en mensajes separados; no mezcla ARS y USD.
+- Detecta reenvíos por huella del archivo y por operación/importe/moneda, cuando hay operación. La protección empieza con esta versión: los pagos históricos no contienen huellas.
+- Prepara la entrega en Neon, asigna roles, consulta Discord para verificar todos los rangos y recién entonces informa éxito.
+- Recupera entregas interrumpidas cada cinco minutos, hasta tres intentos; después interviene administración. El estado sobrevive a reinicios. `/manual` también pausa los reintentos del ticket.
+- Ante incertidumbre o fallo técnico avisa al administrador desde el primer problema y conserva el ticket. No acusa de fraude ni pide otro pago por fallas de procesamiento.
 
-* **Auditoría Financiera por Visión (IA)**: Validación en tiempo real de comprobantes de transferencia (imágenes/PDF). Compara destinatarios, entidades bancarias receptoras y marcas de tiempo para mitigar fraudes y capturas duplicadas.
-* **Soporte y Entrega de Accesos**: Chatbot autónomo que atiende consultas frecuentes y asigna permisos de usuario automáticamente en la plataforma una vez verificada la transacción.
-* **Búnker de IA (Failover & Circuit Breaker)**: Rotación automática entre un pool de 5 modelos de lenguaje y múltiples claves de API para evitar cuotas de Rate Limit. Ante fallos consecutivos (5 intentos), se desactiva la IA y se delega el caso a soporte humano.
-* **Ciclo de Vida Autónomo**: Limpieza periódica en segundo plano que elimina canales completados (a las 24 horas) o inactivos (a las 3 horas), protegiendo solicitudes especiales vigentes.
-* **Resiliencia en Producción**: Servidor de salud (Health Check) para hostings PaaS (Render) y lógica de reintentos con retroceso exponencial ante bloqueos perimetrales de red (HTTP 429).
+No hay API bancaria ni confirmación de acreditación. La aprobación se basa en el comprobante, según la política permisiva del propietario. Se mantiene el pool existente: Gemini 3.8 Flash, 3.7 Flash y 3.6 Flash. No se habilita facturación ni se agregan servicios pagos.
 
----
+## Conservación
 
-## 📂 Estructura del Proyecto
+`/conservar_ticket` es exclusivo para administradores. Guarda una protección permanente en Neon, respetada por limpieza periódica, `/purgar_tickets`, compra completada y salida del cliente del servidor. Reiniciar o completar la venta no quita la marca. El ticket queda para borrado manual.
 
-* **[main.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/main.py)**: Punto de entrada, conexión a la DB, carga de cogs y control de reintentos de red.
-* **[keep_alive.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/keep_alive.py)**: Servidor web HTTP ligero de Health Check.
-* **[cogs/bumps.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs/bumps.py)**: Gamificación, registro de interacción de usuarios y rankings locales.
-* **[cogs/tickets.py](file:///c:/Users/fabro/Documents/DS%20chaquetas/Contador-de-bumps/cogs/tickets.py)**: Núcleo de soporte por chat, motor LLM y auditoría visual de comprobantes.
+La protección no controla botones ni automatizaciones de Ticket Tool u otros bots. `/manual` apaga la atención automática y no equivale a conservar.
 
----
+Sin protección, los tickets sin conversación pueden cerrarse a las tres horas y los demás a las 24 horas de inactividad. Se comprueba también el historial reciente de Discord. Un fallo al leerlo o una entrega pendiente impiden el borrado. Se eliminó el barrido basado solo en la edad del canal. Las sugerencias con conversación conservan su protección previa.
 
-## ⚙️ Configuración Rápida
+## Configuración y ejecución
 
-### Variables de Entorno (`.env`)
-```env
-DISCORD_TOKEN=TuTokenDeDiscord
-DATABASE_URL=postgresql://usuario:contraseña@servidor.neon.tech/db?sslmode=require
-GEMINI_API_KEY=ClavePrincipal
-GEMINI_API_KEY_2=ClaveSecundaria
-PORT=8080
-```
+Variables privadas: `DISCORD_TOKEN`, `DATABASE_URL`, `GEMINI_API_KEY_1`, `GEMINI_API_KEY_2` y `PORT` (opcional, 8080). Nunca guardar sus valores en Git.
 
-### Base de Datos (NeonDB / SQL)
-```sql
-CREATE TABLE IF NOT EXISTS bumps (user_id TEXT, guild_id TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (user_id, guild_id));
-CREATE TABLE IF NOT EXISTS tickets (channel_id BIGINT PRIMARY KEY, user_id BIGINT, estado TEXT DEFAULT 'abierto', ultimo_mensaje TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, hablo BOOLEAN DEFAULT FALSE);
-CREATE TABLE IF NOT EXISTS pagos (pago_id SERIAL PRIMARY KEY, user_id BIGINT, ticket_id BIGINT, monto NUMERIC(10, 2), moneda TEXT);
-CREATE TABLE IF NOT EXISTS usuarios (user_id BIGINT PRIMARY KEY);
-```
-
----
-
-## 🛠️ Instalación y Ejecución
-
-```bash
-# 1. Instalar dependencias
+```sh
 pip install -r requirements.txt
-
-# 2. Ejecutar la aplicación
 python main.py
 ```
+
+El bot necesita intents de miembros y contenido de mensajes, permiso para administrar roles y un rol superior a todos los rangos vendidos. Identificadores y precios: `cogs/tickets.py`; tarifas de cálculo: `receipts.py`, contrastadas con tests.
+
+El inicio aplica `payment_store.SCHEMA`: columnas e índices adicionales, sin borrar pagos ni reconstruir datos históricos. En un rollback se conservan las columnas; una versión anterior no respeta las protecciones ni entregas nuevas.
+
+## Pruebas
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+La suite normal simula Discord y Gemini. Para la integración PostgreSQL configurar `BOT_TEST_DATABASE_URL`: usa el endpoint directo, una transacción y tablas TEMP con `search_path=pg_temp`; revierte la transacción y cierra la conexión al terminar. No escribe filas de negocio.
+
+Al desplegar, comprobar commit en Render, carga de cogs, sincronización de `/conservar_ticket`, esquema actualizado y jerarquía de roles. HTTP 200 del servidor de salud no demuestra conexión con Discord ni Neon.

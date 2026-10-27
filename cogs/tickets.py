@@ -14,7 +14,7 @@ import contextlib
 import json
 
 from payment_store import PaymentStore
-from receipts import attachment_mime, parse_receipts, requested_roles, vision_prompt
+from receipts import PRICES, attachment_mime, parse_receipts, requested_roles, vision_prompt
 from communication import local_answer, history_line, send_response, PRICE_LIST, PAYMENT_DETAILS
 from ticket_inbox import TicketInbox
 
@@ -788,6 +788,9 @@ class Tickets(commands.Cog):
         warning = await message.channel.send("⏳ Estoy leyendo tus comprobantes. No hace falta que vuelvas a pagar.")
         suggestion = message.channel.name.startswith('sug-') or message.channel.category_id == ID_CATEGORIA_SUGERENCIAS
         try:
+            desired = () if suggestion else await self._requested_purchase(message)
+            if not suggestion:
+                await self.payments.remember(message.channel.id, message.author.id, desired)
             parts, digests, known, seen = [], [], [], set()
             total_size = 0
             for attachment in attachments:
@@ -823,6 +826,8 @@ class Tickets(commands.Cog):
             related = [r for r in [*known, *saved] if r and r['user_id'] == message.author.id and r['ticket_id'] == message.channel.id]
             if len(related) != len(known) + len(saved):
                 issues.append("hay un comprobante que ya se registró en otra compra")
+            if len({r['pago_id'] for r in saved if r}) < len(saved):
+                issues.append("distintos archivos se asociaron a la misma operación; se contó una sola vez y requiere revisión")
             if suggestion:
                 if related:
                     await self._marcar_ticket_completado(message.channel.id)
@@ -832,12 +837,17 @@ class Tickets(commands.Cog):
                 else:
                     await warning.edit(content="No pude completar la lectura. Ya pedí revisión; no vuelvas a pagar.")
             else:
-                desired = await self._requested_purchase(message)
                 handled = await self._handle_pending_purchase(message, desired)
                 if handled:
                     await warning.edit(content="Lectura terminada. El estado de tu compra figura en el mensaje de abajo.")
                 elif related:
-                    await warning.edit(content="✅ Este comprobante ya estaba registrado. No se volvió a sumar ni a cobrar.")
+                    confirmed = await self._check_registered_purchase(message, desired)
+                    if confirmed:
+                        await warning.edit(content="✅ Este comprobante ya estaba registrado; no se volvió a sumar. "
+                            f"Verifiqué en Discord que tenés los rangos **{', '.join(confirmed)}**.")
+                    else:
+                        await warning.edit(content="El comprobante ya está registrado, pero falta resolver tu pedido de rangos. "
+                            "Pedí revisión a administración; no vuelvas a pagar.")
                 else:
                     await warning.edit(content="No pude completar la lectura. Ya pedí revisión; no vuelvas a pagar.")
             if issues or not related:
@@ -850,27 +860,72 @@ class Tickets(commands.Cog):
 
     async def _handle_pending_purchase(self, message, desired=None):
         desired = requested_roles(message.content) if desired is None else desired
-        result = await self.payments.prepare(message.channel.id, message.author.id, desired)
-        if result.get('empty'):
-            return False
-        if result.get('delivery'):
-            await self._fulfill_delivery(result['delivery'], message.channel, message.guild)
-        else:
+        handled = False
+        # Puede terminar una entrega recuperada y quedar otra compra pendiente.
+        # Hay tres rangos: el límite también evita bucles ante un estado inconsistente.
+        for _ in range(len(ROLES)):
+            result = await self.payments.prepare(message.channel.id, message.author.id, desired)
+            desired = ()
+            if result.get('empty'):
+                return handled
+            handled = True
+            if result.get('delivery'):
+                if not await self._fulfill_delivery(result['delivery'], message.channel, message.guild):
+                    return True
+                continue
             totals = ' + '.join(f"{amount} {currency}" for currency, amount in result['totals'].items())
             if result['missing'] is not None:
-                await message.channel.send(f"Registré {totals} para {', '.join(result['desired'])}. "
-                    f"Faltan {result['missing']} {next(iter(result['totals']))}. Si ya enviaste el resto, adjuntá ese comprobante; no repitas el pago.")
+                currency = next(iter(result['totals']))
+                available = result['totals'][currency]
+                uncovered = []
+                for name in result['desired']:
+                    price = PRICES[name][currency]
+                    if available >= price:
+                        available -= price
+                    else:
+                        uncovered.append(name)
+                await message.channel.send(f"Registré {totals} para el pedido **{', '.join(result['desired'])}**. "
+                    f"Falta registrar {result['missing']} {currency} para completar **{', '.join(uncovered)}** "
+                    "y entregar todos los rangos del pedido. Si ya pagaste el resto, adjuntá ese comprobante; no repitas el pago.")
             else:
                 await message.channel.send(f"Registré {totals}. Decime qué rangos querés: Diamante, Oro, Plata o los tres. Los comprobantes quedan guardados.")
+            return True
         return True
+
+    async def _check_registered_purchase(self, message, desired):
+        """Un duplicado evita otro ingreso, pero todavía debe comprobar la entrega."""
+        deliveries = await self.payments.completed(message.channel.id, message.author.id)
+        purchase = await self.payments.summary(message.channel.id, message.author.id)
+        desired = set(desired) | set(purchase.get('pending_roles', []))
+        recorded = {name for row in deliveries for name in (row['roles_asignados'] or [])}
+        names = tuple(name for name in ROLES if name in recorded)
+        if not names or set(desired) - recorded:
+            missing = ', '.join(name for name in ROLES if name in desired - recorded) or 'los rangos solicitados'
+            await self._request_manual_review(message.channel,
+                f"El comprobante ya está registrado, pero falta conciliar **{missing}** con la entrega. "
+                "No vuelvas a pagar; administración tiene que revisar el pedido completo.")
+            return ()
+        member = await message.guild.fetch_member(message.author.id)
+        missing = {name for name in names if ROLES[name]['id'] not in {role.id for role in member.roles}}
+        for delivery in deliveries:
+            if missing.intersection(delivery['roles_asignados'] or []):
+                reopened = await self.payments.reopen(delivery['entrega_id'], message.channel.id, message.author.id)
+                if reopened and not await self._fulfill_delivery(reopened, message.channel, message.guild):
+                    return ()
+        member = await message.guild.fetch_member(message.author.id)
+        if not {ROLES[name]['id'] for name in names}.issubset({role.id for role in member.roles}):
+            await self._request_manual_review(message.channel,
+                "El comprobante está registrado, pero Discord todavía no confirma todos los rangos. No vuelvas a pagar.")
+            return ()
+        return names
 
     async def _fulfill_delivery(self, delivery, channel, guild):
         if delivery['entrega_estado'] == 'manual':
             await channel.send(f"Tu comprobante está registrado. <@{FABRIZIO_ID}> tiene que revisar la entrega; no vuelvas a pagar.")
-            return
+            return False
         attempts = await self.payments.attempt(delivery['entrega_id'])
         if attempts is None:
-            return
+            return False
         try:
             names = delivery['roles_asignados']
             roles = [guild.get_role(ROLES[name]['id']) for name in names]
@@ -882,7 +937,7 @@ class Tickets(commands.Cog):
             member = await guild.fetch_member(delivery['user_id'])
             if not {r.id for r in roles}.issubset({r.id for r in member.roles}):
                 raise RuntimeError("Discord no confirmó todos los roles")
-            await self.payments.finish(delivery['entrega_id'], channel.id)
+            status = await self.payments.finish(delivery['entrega_id'], channel.id)
         except Exception as exc:
             print(f"[Entrega {delivery['entrega_id']}] {type(exc).__name__}")
             try:
@@ -891,14 +946,18 @@ class Tickets(commands.Cog):
                 await self._request_manual_review(channel,
                     "El comprobante está registrado, pero falta confirmar todos los rangos. "
                     "La entrega queda pendiente y se reintentará hasta tres veces. No vuelvas a pagar.")
-            return
+            return False
         try:
+            remaining = status['remaining']
+            detail = (f"Quedan pendientes **{', '.join(remaining)}**; el pedido sigue abierto."
+                      if remaining else "Entrega de estos rangos confirmada a partir de los comprobantes.")
             await channel.send(f"✅ <@{delivery['user_id']}> Ya tenés los rangos **{', '.join(names)}**. "
-                               f"🔔 <@{FABRIZIO_ID}> Entrega completada a partir de los comprobantes.",
+                               f"🔔 <@{FABRIZIO_ID}> {detail}",
                                allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=FABRIZIO_ID),discord.Object(id=delivery['user_id'])]))
         except discord.HTTPException:
             print(f"[Entrega {delivery['entrega_id']}] Rangos confirmados; no se pudo enviar aviso")
             raise
+        return True
 
     @tasks.loop(minutes=5)
     async def recover_deliveries(self):

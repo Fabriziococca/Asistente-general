@@ -124,6 +124,145 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await restarted.save(self.message,[Receipt(0,Decimal(6400),'ARS','otro',None)],['second'])
         self.assertEqual((await restarted.prepare(-456,-123))['delivery']['roles_asignados'],['Diamante','Oro','Plata'])
 
+    async def test_paypal_followup_oro_keeps_original_diamante_and_oro(self):
+        await self.store.save(self.message,
+            [Receipt(0,Decimal('4.50'),'USD','paypal','diamond-payment')], ['diamond-pdf'])
+        first = await self.store.prepare(-456,-123,('Diamante','Oro'))
+        self.assertEqual(first['missing'],Decimal('4.00'))
+        restarted = PaymentStore(BoundConnection(self.conn))
+        await restarted.save(self.message,
+            [Receipt(0,Decimal('4.00'),'USD','paypal','gold-payment')], ['gold-pdf'])
+        delivery = (await restarted.prepare(-456,-123,('Oro',)))['delivery']
+        self.assertEqual(delivery['roles_asignados'],['Diamante','Oro'])
+        await restarted.finish(delivery['entrega_id'],-456)
+        self.assertTrue(all(row['roles_asignados']==['Diamante','Oro'] for row in
+            await self.conn.fetch("SELECT roles_asignados FROM pagos WHERE moneda='USD'")))
+
+    async def test_finishing_one_delivery_keeps_other_requested_roles_and_payments(self):
+        await self.store.save(self.message,
+            [Receipt(0,Decimal('4.50'),'USD','paypal',None)], ['diamond-pdf'])
+        first = (await self.store.prepare(-456,-123,('Diamante',)))['delivery']
+        await self.store.save(self.message,
+            [Receipt(0,Decimal('4.00'),'USD','paypal',None)], ['gold-pdf'])
+        await self.store.prepare(-456,-123,('Oro',))
+        await self.store.finish(first['entrega_id'],-456)
+        ticket = await self.conn.fetchrow("SELECT * FROM tickets WHERE channel_id=-456")
+        self.assertEqual(ticket['rangos_solicitados'],['Oro'])
+        self.assertEqual(ticket['estado'],'abierto')
+        second = (await self.store.prepare(-456,-123))['delivery']
+        self.assertEqual(second['roles_asignados'],['Oro'])
+
+    def purchase_bot(self):
+        from unittest.mock import AsyncMock
+        from test_tickets import fixture
+        cog, _, message = fixture()
+        cog.bot.pool = BoundConnection(self.conn)
+        cog.payments = self.store
+        message.author.id = -123
+        message.channel.id = -456
+        message.guild.id = -567
+        async def assign(*roles, **kwargs):
+            existing = {r.id:r for r in message.author.roles}
+            existing.update({r.id:r for r in roles})
+            message.author.roles = list(existing.values())
+        message.author.add_roles = AsyncMock(side_effect=assign)
+        return cog, message
+
+    async def test_paypal_two_distinct_pdfs_one_message_delivers_both_roles(self):
+        from unittest.mock import AsyncMock
+        from test_tickets import attachment
+        from test_receipts import reading
+        cog, message = self.purchase_bot()
+        message.content = 'Rango diamante y Rango oro'
+        message.attachments = [attachment(b'diamond','application/pdf','pago.pdf'),
+                               attachment(b'gold','application/pdf','pago.pdf')]
+        cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes':[
+            reading(monto='4.50',moneda='USD',metodo_pago='paypal',numero_operacion='diamond-paypal'),
+            reading(1,monto='4.00',moneda='USD',metodo_pago='paypal',numero_operacion='gold-paypal')]}))
+        await cog.on_message(message)
+        self.assertEqual(len(cog._generate_content_with_rotation.await_args.args[1]),2)
+        self.assertEqual(len(message.author.add_roles.await_args.args),2)
+        rows = await self.conn.fetch("SELECT * FROM pagos WHERE moneda='USD'")
+        self.assertEqual(len(rows),2)
+        self.assertEqual(sum(r['monto'] for r in rows),Decimal('8.50'))
+        self.assertTrue(all(r['roles_asignados']==['Diamante','Oro'] and r['entrega_estado']=='entregado' for r in rows))
+
+    async def test_incident_sequence_and_duplicate_restore_without_another_payment(self):
+        from unittest.mock import AsyncMock
+        from test_tickets import attachment
+        from test_receipts import reading
+        from cogs.tickets import ROLES
+        cog, message = self.purchase_bot()
+        message.content = 'Rango diamante y Rango oro'
+        # Incluso si el primer mensaje repite el mismo PDF, el pedido no se pierde.
+        message.attachments = [attachment(b'diamond','application/pdf'),attachment(b'diamond','application/pdf')]
+        cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes':[
+            reading(monto='4.50',moneda='USD',metodo_pago='paypal',numero_operacion='diamond-paypal')]}))
+        await cog.on_message(message)
+        message.author.add_roles.assert_not_awaited()
+        self.assertIn('completar **Oro**',message.channel.sent[-1])
+        message.id += 1
+        message.content = 'Oro'
+        message.attachments = [attachment(b'gold','application/pdf')]
+        cog._generate_content_with_rotation.return_value = json.dumps({'comprobantes':[
+            reading(monto='4.00',moneda='USD',metodo_pago='paypal',numero_operacion='gold-paypal')]})
+        await cog.on_message(message)
+        self.assertEqual({r.id for r in message.author.roles},{ROLES['Diamante']['id'],ROLES['Oro']['id']})
+        message.id += 1
+        message.content = 'Rango diamante'
+        message.attachments = [attachment(b'diamond','application/pdf')]
+        await cog.on_message(message)
+        self.assertEqual(message.author.add_roles.await_count,1)
+        message.author.roles = [NS(id=ROLES['Oro']['id'])]
+        message.id += 1
+        await cog.on_message(message)
+        self.assertEqual({r.id for r in message.author.roles},{ROLES['Diamante']['id'],ROLES['Oro']['id']})
+        self.assertEqual(message.author.add_roles.await_count,2)
+        self.assertEqual(cog._generate_content_with_rotation.await_count,2)
+        rows = await self.conn.fetch("SELECT * FROM pagos WHERE moneda='USD'")
+        self.assertEqual(len(rows),2)
+        self.assertEqual(sum(r['monto'] for r in rows),Decimal('8.50'))
+        self.assertTrue(all(r['roles_asignados']==['Diamante','Oro'] and r['entrega_estado']=='entregado' for r in rows))
+
+    async def test_legacy_incomplete_delivery_requests_review_instead_of_duplicate_success(self):
+        from test_tickets import attachment
+        await self.store.save(self.message,[Receipt(0,Decimal('4.50'),'USD','paypal',None),
+            Receipt(1,Decimal('4.00'),'USD','paypal',None)],['diamond-hash','gold-hash'])
+        delivery = (await self.store.prepare(-456,-123,('Oro',)))['delivery']
+        await self.store.finish(delivery['entrega_id'],-456)
+        cog,message = self.purchase_bot()
+        message.content='Rango diamante'
+        from hashlib import sha256
+        await self.conn.execute("UPDATE pagos SET comprobante_hash=$1 WHERE comprobante_hash='diamond-hash'",
+            sha256(b'diamond').hexdigest())
+        message.attachments=[attachment(b'diamond','application/pdf')]
+        await cog.on_message(message)
+        self.assertTrue(any('conciliar **Diamante**' in (s or '') for s in message.channel.sent))
+        self.assertTrue(await self.conn.fetchval("SELECT conservar FROM tickets WHERE channel_id=-456"))
+        self.assertEqual((await self.store.summary(-456,-123))['state'],'receipt_pending')
+        self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE moneda='USD'"),2)
+        message.author.add_roles.assert_not_awaited()
+
+    async def test_failed_first_read_keeps_combo_before_second_payment(self):
+        from unittest.mock import AsyncMock
+        from test_tickets import attachment
+        from test_receipts import reading
+        cog,message = self.purchase_bot()
+        message.content='Diamante y Oro'
+        message.attachments=[attachment(b'diamond','application/pdf')]
+        cog._generate_content_with_rotation=AsyncMock(return_value='incomplete JSON')
+        await cog.on_message(message)
+        self.assertEqual(await self.conn.fetchval("SELECT rangos_solicitados FROM tickets WHERE channel_id=-456"),['Diamante','Oro'])
+        message.id += 1
+        message.content='Oro'
+        message.attachments=[attachment(b'gold','application/pdf')]
+        cog._generate_content_with_rotation.return_value=json.dumps({'comprobantes':[
+            reading(monto='4.00',moneda='USD',numero_operacion='gold-payment')]})
+        await cog.on_message(message)
+        message.author.add_roles.assert_not_awaited()
+        self.assertEqual(await self.conn.fetchval("SELECT rangos_solicitados FROM tickets WHERE channel_id=-456"),['Diamante','Oro'])
+        self.assertIn('4.50 USD para completar **Diamante**',message.channel.sent[-1])
+
     async def test_recovery_is_persistent_and_bounded(self):
         await self.save_two()
         delivery = (await self.store.prepare(-456,-123))['delivery']

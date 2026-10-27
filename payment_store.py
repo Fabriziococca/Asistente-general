@@ -3,7 +3,7 @@
 from decimal import Decimal
 from uuid import uuid4
 
-from receipts import choose_roles
+from receipts import PRICES, choose_roles
 
 
 SCHEMA = """
@@ -43,17 +43,19 @@ class PaymentStore:
         async with self.pool.acquire(timeout=10) as conn:
             rows = await conn.fetch("""SELECT entrega_estado,roles_asignados FROM pagos
                 WHERE ticket_id=$1 AND user_id=$2 ORDER BY pago_id DESC""", ticket_id, user_id)
+            wanted = await conn.fetchval("SELECT rangos_solicitados FROM tickets WHERE channel_id=$1", ticket_id)
         states = {row['entrega_estado'] for row in rows}
         if states & {'preparado','reintentar','manual'}:
             state = 'delivery_pending'
-        elif 'pendiente' in states:
+        elif 'pendiente' in states or (rows and wanted):
             state = 'receipt_pending'
         elif 'entregado' in states:
             state = 'delivered'
         else:
             state = 'unknown'
         return {'state': state, 'roles': list(dict.fromkeys(
-            name for row in rows for name in (row['roles_asignados'] or [])))}
+            name for row in rows for name in (row['roles_asignados'] or []))),
+            'pending_roles': list(wanted or [])}
 
     async def save(self, message, receipts, digests, suggestion=False):
         """No se asigna acceso antes de guardar. Los reenvíos no agregan ingresos."""
@@ -79,19 +81,37 @@ class PaymentStore:
                     rows.append(row)
         return rows
 
+    async def _remember(self, conn, ticket_id, user_id, desired):
+        ticket = await conn.fetchrow("SELECT rangos_solicitados FROM tickets WHERE channel_id=$1 FOR UPDATE", ticket_id)
+        delivered = await conn.fetch("""SELECT roles_asignados FROM pagos
+            WHERE ticket_id=$1 AND user_id=$2 AND entrega_estado='entregado'""", ticket_id, user_id)
+        delivered_roles = {name for row in delivered for name in (row['roles_asignados'] or [])}
+        # "Oro" junto al segundo comprobante NO cancela el Diamante pendiente.
+        # La intención guardada sobrevive a mensajes, reintentos y reinicios.
+        wanted = set((ticket['rangos_solicitados'] or ()) if ticket else ()) | set(desired)
+        remaining = tuple(name for name in PRICES if name in wanted - delivered_roles)
+        await conn.execute("""UPDATE tickets SET rangos_solicitados=$2,
+            estado=CASE WHEN cardinality($2::text[]) > 0 AND estado IS DISTINCT FROM 'pausado'
+                THEN 'abierto' ELSE estado END WHERE channel_id=$1""",
+            ticket_id, list(remaining) or None)
+        return remaining
+
+    async def remember(self, ticket_id, user_id, desired):
+        """Persiste el pedido antes de leer archivos o llamar a la IA."""
+        async with self.pool.acquire(timeout=10) as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", ticket_id)
+                return await self._remember(conn, ticket_id, user_id, desired)
+
     async def prepare(self, ticket_id, user_id, desired=()):
         async with self.pool.acquire(timeout=10) as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", ticket_id)
+                desired = await self._remember(conn, ticket_id, user_id, desired)
                 pending = await conn.fetchrow("""SELECT * FROM pagos WHERE ticket_id=$1 AND user_id=$2
                     AND entrega_estado IN ('preparado','reintentar','manual') ORDER BY pago_id LIMIT 1""", ticket_id, user_id)
                 if pending:
                     return {"delivery": dict(pending)}
-                ticket = await conn.fetchrow("SELECT rangos_solicitados FROM tickets WHERE channel_id=$1 FOR UPDATE", ticket_id)
-                if desired:
-                    await conn.execute("UPDATE tickets SET rangos_solicitados=$2 WHERE channel_id=$1", ticket_id, list(desired))
-                elif ticket:
-                    desired = ticket['rangos_solicitados'] or ()
                 rows = await conn.fetch("""SELECT * FROM pagos WHERE ticket_id=$1 AND user_id=$2
                     AND entrega_estado='pendiente' ORDER BY pago_id FOR UPDATE""", ticket_id, user_id)
                 if not rows:
@@ -124,9 +144,39 @@ class PaymentStore:
     async def finish(self, delivery_id, ticket_id):
         async with self.pool.acquire(timeout=10) as conn:
             async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", ticket_id)
+                delivery = await conn.fetchrow("""SELECT roles_asignados FROM pagos
+                    WHERE entrega_id=$1 AND ticket_id=$2 LIMIT 1""", delivery_id, ticket_id)
+                if not delivery:
+                    raise ValueError("Entrega sin comprobantes en este ticket")
+                ticket = await conn.fetchrow("SELECT rangos_solicitados FROM tickets WHERE channel_id=$1 FOR UPDATE", ticket_id)
+                assigned = set(delivery['roles_asignados'] or ())
+                remaining = tuple(name for name in (ticket['rangos_solicitados'] or ()) if name not in assigned) if ticket else ()
                 await conn.execute("UPDATE pagos SET entrega_estado='entregado', entrega_actualizada=CURRENT_TIMESTAMP WHERE entrega_id=$1", delivery_id)
-                await conn.execute("""UPDATE tickets SET estado='completado', rangos_solicitados=NULL,
-                    ultimo_mensaje=CURRENT_TIMESTAMP WHERE channel_id=$1""", ticket_id)
+                pending = await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM pagos WHERE ticket_id=$1
+                    AND entrega_estado IN ('pendiente','preparado','reintentar','manual'))""", ticket_id)
+                await conn.execute("""UPDATE tickets SET estado=CASE WHEN estado='pausado' THEN estado
+                    WHEN $3 THEN 'abierto' ELSE 'completado' END, rangos_solicitados=$2,
+                    ultimo_mensaje=CURRENT_TIMESTAMP WHERE channel_id=$1""",
+                    ticket_id, list(remaining) or None, bool(remaining) or pending)
+                return {'remaining': remaining, 'pending': pending}
+
+    async def completed(self, ticket_id, user_id):
+        async with self.pool.acquire(timeout=10) as conn:
+            return await conn.fetch("""SELECT DISTINCT ON (entrega_id) * FROM pagos
+                WHERE ticket_id=$1 AND user_id=$2 AND entrega_estado='entregado'
+                AND entrega_id IS NOT NULL ORDER BY entrega_id,pago_id""", ticket_id, user_id)
+
+    async def reopen(self, delivery_id, ticket_id, user_id):
+        """Revisa acceso de una entrega registrada sin sumar otro pago ni inventar rangos."""
+        async with self.pool.acquire(timeout=10) as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", ticket_id)
+                rows = await conn.fetch("""UPDATE pagos SET entrega_estado='preparado',
+                    entrega_intentos=0, entrega_actualizada=CURRENT_TIMESTAMP
+                    WHERE entrega_id=$1 AND ticket_id=$2 AND user_id=$3 AND entrega_estado='entregado'
+                    RETURNING *""", delivery_id, ticket_id, user_id)
+                return dict(rows[0]) if rows else None
 
     async def failed(self, delivery_id, attempts):
         async with self.pool.acquire(timeout=10) as conn:

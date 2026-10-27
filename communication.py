@@ -33,6 +33,9 @@ def local_answer(content, *, suggestion=False, purchase=None):
         if state == 'delivery_pending':
             return "Tu comprobante está registrado y la entrega de rangos sigue pendiente. Administración ya tiene el caso para revisar; no vuelvas a pagar."
         if state == 'receipt_pending':
+            if (purchase or {}).get('pending_roles'):
+                return (f"El pedido sigue abierto para **{', '.join(purchase['pending_roles'])}**. "
+                        "Los comprobantes que recibí quedan registrados. Si ya mandaste todo, administración tiene que revisar el pedido completo; no vuelvas a pagar.")
             return "Tu comprobante quedó registrado. Decime qué rangos querés para comprobar el saldo y completar la entrega; no vuelvas a pagar."
         if (purchase or {}).get('has_attachment'):
             return "Veo que ya mandaste un archivo, pero todavía no tengo una validación confirmada. Voy a pedir que revisen el caso; no vuelvas a pagar."

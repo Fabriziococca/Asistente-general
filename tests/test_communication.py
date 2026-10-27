@@ -30,6 +30,13 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('entregados',answer)
         self.assertNotIn('mandá el comprobante',answer)
 
+    def test_pending_role_is_named_without_claiming_the_whole_order_delivered(self):
+        answer=local_answer('¿Dónde está mi rango?',purchase={
+            'state':'receipt_pending','roles':['Oro'],'pending_roles':['Diamante']})
+        self.assertIn('**Diamante**',answer)
+        self.assertIn('sigue abierto',answer)
+        self.assertNotIn('ya fueron entregados',answer)
+
     def test_suggestion_does_not_invite_prepayment(self):
         answer=local_answer('Pasame el alias para pagar',suggestion=True)
         self.assertIn('confirmación',answer)

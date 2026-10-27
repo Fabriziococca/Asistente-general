@@ -44,8 +44,10 @@ def fixture():
     bot = NS(pool=pool_for(conn), user=NS(mentioned_in=lambda m: False))
     cog = Tickets(bot)
     cog.payments = NS(known=AsyncMock(return_value=None), save=AsyncMock(return_value=[]),
+                      remember=AsyncMock(),
                       prepare=AsyncMock(return_value={'empty': True}),
-                      attempt=AsyncMock(return_value=1), finish=AsyncMock(), failed=AsyncMock(),
+                      attempt=AsyncMock(return_value=1), finish=AsyncMock(return_value={'remaining':(), 'pending':False}), failed=AsyncMock(),
+                      completed=AsyncMock(return_value=[]), reopen=AsyncMock(return_value=None),
                       summary=AsyncMock(return_value={'state':'unknown','roles':[]}))
     cog.inbox = NS(record=AsyncMock(),claim=AsyncMock(return_value={'attempts':1}),
                    done=AsyncMock(),retry=AsyncMock())
@@ -93,7 +95,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog, _, msg = fixture()
         msg.attachments = [attachment(b'photo1'), attachment(b'photo2', None)]
         cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes': [reading(), reading(1, 6400)]}))
-        cog.payments.save.return_value = [dict(user_id=123, ticket_id=456), dict(user_id=123, ticket_id=456)]
+        cog.payments.save.return_value = [dict(pago_id=1,user_id=123,ticket_id=456), dict(pago_id=2,user_id=123,ticket_id=456)]
         cog._handle_pending_purchase = AsyncMock(return_value=True)
         await cog.handle_receipt_image(msg)
         self.assertEqual(len(cog._generate_content_with_rotation.await_args.args[1]), 2)
@@ -104,7 +106,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog, _, msg = fixture()
         msg.attachments = [attachment(), attachment()]
         cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes': [reading()]}))
-        cog.payments.save.return_value = [dict(user_id=123, ticket_id=456)]
+        cog.payments.save.return_value = [dict(pago_id=1,user_id=123,ticket_id=456)]
         await cog.handle_receipt_image(msg)
         self.assertEqual(len(cog._generate_content_with_rotation.await_args.args[1]), 1)
 
@@ -116,6 +118,58 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         await cog.handle_receipt_image(msg)
         cog._generate_content_with_rotation.assert_not_awaited()
         cog.payments.save.assert_not_awaited()
+
+    async def test_duplicate_verifies_all_registered_roles_before_confirming(self):
+        cog, _, msg = fixture()
+        msg.content = 'Diamante'
+        msg.attachments = [attachment()]
+        cog.payments.known.return_value = dict(user_id=123,ticket_id=456)
+        cog.payments.completed.return_value = [delivery()]
+        msg.author.roles = [NS(id=r['id']) for r in ROLES.values()]
+        await cog.handle_receipt_image(msg)
+        msg.guild.fetch_member.assert_awaited()
+        msg.author.add_roles.assert_not_awaited()
+        self.assertFalse(any('conciliar' in (s or '') for s in msg.channel.sent))
+        cog.payments.save.assert_not_awaited()
+
+    async def test_duplicate_cannot_confirm_requested_role_missing_from_records(self):
+        cog, _, msg = fixture()
+        msg.content = 'Rango diamante'
+        msg.attachments = [attachment()]
+        cog.payments.known.return_value = dict(user_id=123,ticket_id=456)
+        cog.payments.completed.return_value = [dict(delivery(),roles_asignados=['Oro'])]
+        await cog.handle_receipt_image(msg)
+        msg.author.add_roles.assert_not_awaited()
+        self.assertTrue(any('conciliar **Diamante**' in (s or '') for s in msg.channel.sent))
+        cog.payments.reopen.assert_not_awaited()
+
+    async def test_duplicate_without_text_also_checks_persisted_pending_roles(self):
+        cog, _, msg = fixture()
+        msg.content = ''
+        msg.attachments = [attachment()]
+        cog.payments.known.return_value = dict(user_id=123,ticket_id=456)
+        cog.payments.completed.return_value = [dict(delivery(),roles_asignados=['Oro'])]
+        cog.payments.summary.return_value = {'state':'receipt_pending','roles':['Oro'],'pending_roles':['Diamante']}
+        await cog.handle_receipt_image(msg)
+        self.assertTrue(any('conciliar **Diamante**' in (s or '') for s in msg.channel.sent))
+        msg.author.add_roles.assert_not_awaited()
+
+    async def test_distinct_files_with_same_operation_notify_for_review(self):
+        cog, _, msg = fixture()
+        msg.attachments = [attachment(b'first'),attachment(b'second')]
+        cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes':[reading(),reading(1)]}))
+        cog.payments.save.return_value = [dict(pago_id=1,user_id=123,ticket_id=456)]*2
+        await cog.handle_receipt_image(msg)
+        self.assertTrue(any('misma operación' in (s or '') for s in msg.channel.sent))
+
+    async def test_partial_status_names_the_order_and_uncovered_role(self):
+        from decimal import Decimal
+        cog, _, msg = fixture()
+        cog.payments.prepare.return_value = {
+            'totals':{'USD':Decimal('4.50')}, 'missing':Decimal('4.00'), 'desired':('Diamante','Oro')}
+        await cog._handle_pending_purchase(msg)
+        self.assertIn('**Diamante, Oro**',msg.channel.sent[-1])
+        self.assertIn('4.00 USD para completar **Oro**',msg.channel.sent[-1])
 
     async def test_invalid_json_notifies_owner_and_preserves_ticket(self):
         cog, conn, msg = fixture()

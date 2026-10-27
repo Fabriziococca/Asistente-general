@@ -7,8 +7,11 @@ Bot de Python/discord.py para atender tickets de Ticket Tool, leer comprobantes 
 - Lee todas las imágenes/PDF de cada mensaje. Acepta diferencias de diseño, recortes, banco receptor y ausencia de fecha o número de operación; Wilobank es válido. Requiere un importe legible en ARS/USD y coincidencia del titular o cuenta de destino.
 - Gemini extrae datos. Python comprueba precios, combinaciones y saldo con Decimal. Las órdenes textuales del modelo no entregan roles.
 - Registra los comprobantes antes de asignar acceso. Acumula pagos del mismo comprador y ticket, también en mensajes separados; no mezcla ARS y USD.
+- Conserva todos los rangos pendientes desde antes de llamar a Gemini. Si se pidieron Diamante y Oro, escribir solamente “Oro” junto al segundo comprobante no cancela Diamante. USD 4,50 + USD 4 completan ambos; si falta registrar parte del pago, identifica el pedido y los rangos que faltan cubrir. El combo se entrega cuando alcanza el total.
 - Detecta reenvíos por huella del archivo y por operación/importe/moneda, cuando hay operación. La protección empieza con esta versión: los pagos históricos no contienen huellas.
+- Un comprobante repetido también revisa el acceso en Discord. Si falta un rango que ya tiene una entrega registrada, recupera esa entrega sin sumar ingresos. Si el pedido no coincide con los rangos registrados, conserva el ticket y pide revisión, en lugar de confirmar que está resuelto. No reconstruye automáticamente las compras antiguas que quedaron mal clasificadas.
 - Prepara la entrega en Neon, asigna roles, consulta Discord para verificar todos los rangos y recién entonces informa éxito.
+- Completar una entrega quita únicamente esos rangos del pedido pendiente. Otros rangos o comprobantes pendientes mantienen el ticket abierto; la protección de conservación no cambia.
 - Recupera entregas interrumpidas cada cinco minutos, hasta tres intentos; después interviene administración. El estado sobrevive a reinicios. `/manual` también pausa los reintentos del ticket.
 - Ante incertidumbre o fallo técnico avisa al administrador desde el primer problema y conserva el ticket. No acusa de fraude ni pide otro pago por fallas de procesamiento.
 
@@ -38,7 +41,7 @@ El inicio aplica `payment_store.SCHEMA`: columnas e índices adicionales, sin bo
 ## Pruebas
 
 ```sh
-python -m unittest discover -s tests -v
+python -X utf8 -m unittest discover -s tests -v
 ```
 
 La suite normal simula Discord y Gemini. Para la integración PostgreSQL configurar `BOT_TEST_DATABASE_URL`: usa el endpoint directo, una transacción y tablas TEMP con `search_path=pg_temp`; revierte la transacción y cierra la conexión al terminar. No escribe filas de negocio.

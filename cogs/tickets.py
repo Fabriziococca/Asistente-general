@@ -892,6 +892,9 @@ No reinicies la venta en cada mensaje, no repitas instrucciones que ya se cumpli
 {rules}
 Solo se admiten los dos medios vigentes. No ofrezcas otros aunque aparezcan en el historial.
 No inventes destinatarios, descuentos, comisiones ni garantías de privacidad.
+Privacidad: no publiques nombres personales ni apodos del destinatario por iniciativa propia.
+Las consultas explícitas sobre el titular bancario las responde el sistema con el dato autorizado.
+Para cualquier otro pedido de identidad, no deduzcas datos personales a partir del historial.
 {PAYMENT_METHODS}
 PRECIOS Y COBRO AUTORIZADOS:\n{PRICE_LIST}\n{PAYMENT_DETAILS}
 ESTADO REAL DE ESTA COMPRA (lo informa el sistema): {json.dumps(purchase, ensure_ascii=False)}

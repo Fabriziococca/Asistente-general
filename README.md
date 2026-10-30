@@ -78,4 +78,6 @@ Si un comprobante Binance/USDT legible solo muestra un apodo nuevo, la política
 
 La política se controla al extraer, guardar, preparar y entregar. Un método anterior no vuelve a habilitarse por un mensaje repetido ni por la recuperación de pendientes. El contexto y las respuestas automáticas omiten instrucciones de cobro obsoletas.
 
+El titular bancario permanece en el contexto interno para leer comprobantes y responder consultas explícitas sobre el titular. No se publica en bienvenidas, datos generales de pago ni respuestas espontáneas. El historial que recibe la IA omite el nombre y el apodo anterior, y una guardia de salida impide que el modelo los vuelva a ofrecer sin consulta. Los identificadores necesarios para cobrar (alias, CBU/CVU y Pay ID) siguen visibles. Esto controla los mensajes del asistente, no las pantallas de las plataformas de pago ni mensajes ajenos.
+
 Los pagos históricos se conservan con su moneda y método originales. `/finanzas` muestra importes registrados brutos, separa ARS, USDT y USD históricos y no aplica descuentos, conversiones ni comisiones supuestas. No se modifica retroactivamente el historial ni se revocan rangos comprados antes del cambio.

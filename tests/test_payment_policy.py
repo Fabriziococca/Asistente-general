@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock
 
 from communication import local_answer, message_chunks, history_line
 from finance import financial_totals
-from payment_policy import BINANCE_PAY_ID, PAYMENT_DETAILS, current_payment
+from payment_policy import (BINANCE_PAY_ID, BANK_HOLDER, BINANCE_RECIPIENT_ALIASES,
+                            PAYMENT_DETAILS, current_payment, private_identity_reference,
+                            bank_holder_query, public_message_needs_refresh)
 from receipts import parse_receipts, choose_roles, vision_prompt
 from test_receipts import reading
 from test_tickets import fixture, attachment, delivery
@@ -14,6 +16,74 @@ from ticket_messages import ticket_welcome
 
 
 class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
+    def test_identity_is_not_published_in_generic_payment_answers_or_welcomes(self):
+        for question in ('hola', 'datos de pago', 'cómo pago', 'pasame el alias', 'binance'):
+            for suggestion in (False, True):
+                self.assertFalse(private_identity_reference(local_answer(question, suggestion=suggestion)))
+        self.assertFalse(private_identity_reference(PAYMENT_DETAILS))
+        for suggestion in (False, True):
+            content, embed = ticket_welcome(suggestion)
+            self.assertFalse(private_identity_reference(content + json.dumps(embed.to_dict())))
+
+    def test_holder_is_confirmed_only_after_explicit_request_without_google(self):
+        for question in ('¿Quién es el titular?', 'titular', 'A nombre de quién transfiero',
+                         f'¿El titular es {BANK_HOLDER}?', 'Decime el titular de la cuenta'):
+            for suggestion in (False, True):
+                self.assertTrue(bank_holder_query(question))
+                answer = local_answer(question, suggestion=suggestion)
+                self.assertIn(BANK_HOLDER, answer)
+                self.assertIn(BANK_HOLDER, ''.join(message_chunks(answer, query=question)))
+
+    def test_receipt_text_is_not_an_identity_request(self):
+        for question in ('Ya pagué, el titular estaba bien', 'Datos de pago', 'No publiques el titular',
+                         'Quién es el dueño del servidor', 'hola'):
+            self.assertFalse(bank_holder_query(question))
+
+    def test_unsolicited_identity_from_model_is_blocked(self):
+        for name in (BANK_HOLDER, BANK_HOLDER.upper(), BANK_HOLDER.split()[0],
+                     '**' + BANK_HOLDER.replace(' ', '** **') + '**', BINANCE_RECIPIENT_ALIASES[0]):
+            answer = ''.join(message_chunks('Podés pagar a ' + name, query='Pasame los datos de pago'))
+            self.assertFalse(private_identity_reference(answer))
+            self.assertIn(BINANCE_PAY_ID, answer)
+
+    def test_identity_from_old_history_is_omitted(self):
+        for name in (BANK_HOLDER, BINANCE_RECIPIENT_ALIASES[0]):
+            old = NS(author=NS(bot=True,id=1),content='Titular: ' + name,attachments=[])
+            self.assertFalse(private_identity_reference(history_line(old,99)))
+
+    async def test_holder_confirmation_passes_through_discord_response(self):
+        cog, _, message = fixture()
+        message.content = '¿Quién es el titular de la cuenta?'
+        cog._generate_content_with_rotation = AsyncMock()
+        await cog.handle_support_query(message)
+        cog._generate_content_with_rotation.assert_not_awaited()
+        self.assertIn(BANK_HOLDER, message.reply.await_args.args[0])
+
+    async def test_model_response_cannot_publish_holder_on_unrelated_query(self):
+        cog, _, message = fixture()
+        message.content = 'Necesito ayuda con una opción poco común'
+        cog._answer_with_acknowledgement = AsyncMock(return_value='El titular es ' + BANK_HOLDER)
+        await cog.handle_support_query(message)
+        self.assertFalse(private_identity_reference(message.reply.await_args.args[0]))
+        prompt = cog._answer_with_acknowledgement.await_args.args[1]
+        self.assertNotIn(BANK_HOLDER, prompt)
+
+    def test_existing_personalized_welcomes_are_detected_and_rebuilt(self):
+        from scripts.refresh_payment_messages import replacement
+        old = {'content':'Bienvenida','embeds':[{'title':'🛒 Zona de Compras',
+                'fields':[{'name':'Datos de pago','value':'Titular: ' + BANK_HOLDER}]}]}
+        self.assertTrue(public_message_needs_refresh(json.dumps(old)))
+        result = replacement(old)
+        self.assertFalse(public_message_needs_refresh(json.dumps(result)))
+        self.assertIn(BINANCE_PAY_ID, json.dumps(result))
+
+    def test_existing_personalized_status_keeps_payment_evidence(self):
+        from scripts.refresh_payment_messages import replacement
+        old = {'content':f'Comprobante registrado: 4700 ARS. Titular: {BANK_HOLDER}.','embeds':[]}
+        result = replacement(old)
+        self.assertIn('Comprobante registrado: 4700 ARS', result['content'])
+        self.assertFalse(private_identity_reference(result['content']))
+
     def test_only_supported_method_currency_pairs(self):
         for currency,method in [('USD','paypal'),('ARS','paypal'),('USD','binance'),
                                 ('BTC','binance'),('USDT','otro'),('ARS','otro')]:

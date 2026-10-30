@@ -7,7 +7,8 @@ import discord
 
 from receipts import normalize
 from payment_policy import (PAYMENT_DETAILS, PAYMENT_METHODS, PRICE_LIST,
-                            payment_context, safe_payment_response, obsolete_payment_reference)
+                            BANK_HOLDER, bank_holder_query, payment_context,
+                            safe_payment_response, obsolete_payment_reference)
 
 
 PAYMENT_QUERY = r'\b(alias|cbu|cvu|titular|datos de pago|como (pago|pagar)|binance|usdt|usd|dolares|metodos? de pago|tarjeta|cripto|\w*pay\w*)\b'
@@ -15,6 +16,8 @@ PAYMENT_QUERY = r'\b(alias|cbu|cvu|titular|datos de pago|como (pago|pagar)|binan
 
 def local_answer(content, *, suggestion=False, purchase=None):
     text = re.sub(r'<@!?\d+>', '', normalize(content)).strip(' ¡!¿?.\n')
+    if bank_holder_query(content):
+        return f'El titular de la cuenta para transferencias en pesos es **{BANK_HOLDER}**.'
     if suggestion:
         if obsolete_payment_reference(content) or re.search(PAYMENT_QUERY, text) or re.search(r'\b(pagar|pago|precio|cuanto)\b', text):
             return ("La petición cuesta **$4.000 ARS / 4 USDT**. Primero mandá la plataforma de contenido "
@@ -61,8 +64,9 @@ def local_answer(content, *, suggestion=False, purchase=None):
     return None
 
 
-def message_chunks(text, limit=1900):
-    text = safe_payment_response(re.sub(r'\[GRANT_ROLE:[^\]]*\]', '', str(text)).strip())
+def message_chunks(text, limit=1900, *, query=''):
+    text = safe_payment_response(re.sub(r'\[GRANT_ROLE:[^\]]*\]', '', str(text)).strip(),
+                                 allow_bank_holder=bank_holder_query(query))
     if not text:
         text = 'Decime qué necesitás revisar y te ayudo.'
     chunks = []
@@ -80,7 +84,7 @@ def message_chunks(text, limit=1900):
 async def send_response(message, text):
     """Si falla el envío, propaga el error para que la bandeja lo reintente."""
     result = None
-    for chunk in message_chunks(text):
+    for chunk in message_chunks(text, query=getattr(message, 'content', '')):
         for attempt in range(3):
             try:
                 result = await message.reply(chunk, allowed_mentions=discord.AllowedMentions.none(),

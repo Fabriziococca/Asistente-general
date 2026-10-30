@@ -1,4 +1,4 @@
-"""Retira instrucciones de cobro antiguas de mensajes propios, sin borrar mensajes.
+"""Retira instrucciones de cobro antiguas y datos personales de mensajes propios.
 
 Por defecto solo inspecciona. --apply guarda copia previa y edita mensajes del bot.
 Los mensajes de otras personas se informan para edición con la cuenta propietaria.
@@ -17,13 +17,22 @@ sys.path.insert(0,str(ROOT))
 import requests
 from dotenv import dotenv_values
 
-from payment_policy import PAYMENT_DETAILS, PAYMENT_METHODS, BINANCE_PAY_ID, obsolete_payment_reference
+from payment_policy import (PAYMENT_DETAILS, PAYMENT_METHODS, BINANCE_PAY_ID, BANK_HOLDER,
+                            BINANCE_RECIPIENT_ALIASES, obsolete_payment_reference,
+                            private_identity_reference, public_message_needs_refresh)
 from ticket_messages import ticket_welcome
 
 
 def redacted(text):
     text=re.sub(r'\bpay[\W_]*pal\b','medio anterior (retirado)',str(text),flags=re.I)
-    return re.sub(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}','[dato de cobro retirado]',text,flags=re.I)
+    text=re.sub(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}','[dato de cobro retirado]',text,flags=re.I)
+    if private_identity_reference(text):
+        names=[BANK_HOLDER, BANK_HOLDER.split()[0]+' '+BANK_HOLDER.split()[-2],
+               *BANK_HOLDER.split(), *BINANCE_RECIPIENT_ALIASES]
+        for name in names:
+            text=re.sub(r'\b'+r'[\W_]+'.join(map(re.escape,name.split()))+r'\b',
+                        '[dato personal omitido]',text,flags=re.I)
+    return text
 
 
 def replacement(message,suggestion=False):
@@ -37,24 +46,26 @@ def replacement(message,suggestion=False):
             content=redacted(content)+'\n\n'+PAYMENT_METHODS
         else:
             content=PAYMENT_METHODS+'\n\n'+PAYMENT_DETAILS
+    elif private_identity_reference(content):
+        content=redacted(content)
     updated=[]
     for original in embeds:
         embed={k:v for k,v in original.items() if k not in {'provider','video'}}
         for key in ('title','description'):
-            if obsolete_payment_reference(embed.get(key,'')):
+            if public_message_needs_refresh(embed.get(key,'')):
                 embed[key]=redacted(embed[key])
         fields=[]
         for field in embed.get('fields',[]):
-            if obsolete_payment_reference(field.get('name','')+' '+field.get('value','')):
+            if public_message_needs_refresh(field.get('name','')+' '+field.get('value','')):
                 fields.append({'name':'Medios de cobro vigentes','value':PAYMENT_DETAILS,'inline':False})
             else:
                 fields.append(field)
         if fields:
             embed['fields']=fields
-        if obsolete_payment_reference(embed.get('footer',{}).get('text','')):
+        if public_message_needs_refresh(embed.get('footer',{}).get('text','')):
             embed['footer']={'text':'Información de cobro actualizada: transferencia ARS y Binance Pay en USDT.'}
         for key in ('url','image','thumbnail','author'):
-            if obsolete_payment_reference(json.dumps(embed.get(key,''))):
+            if public_message_needs_refresh(json.dumps(embed.get(key,''))):
                 embed.pop(key,None)
         updated.append(embed)
     return {'content':content,'embeds':updated}
@@ -66,7 +77,7 @@ def owner_replacement(content):
         if obsolete_payment_reference(line):
             lines.append(f'Internacionales: Binance Pay en USDT. Pay ID: {BINANCE_PAY_ID}.')
         else:
-            lines.append(re.sub(r'\bUSD\b','USDT',line))
+            lines.append(redacted(re.sub(r'\bUSD\b','USDT',line)))
     return '\n'.join(lines)
 
 
@@ -93,6 +104,7 @@ class DiscordAPI:
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--all-channels',action='store_true',help='Inspeccionar todos los canales de texto y anuncios accesibles')
     parser.add_argument('--guild',default='1423388693082935420')
     args=parser.parse_args()
     api=DiscordAPI(dotenv_values(ROOT/'.env')['DISCORD_TOKEN'])
@@ -101,7 +113,7 @@ def main():
         raise RuntimeError('La credencial no corresponde al asistente esperado')
     channels=api.request('GET',f'/guilds/{args.guild}/channels')
     selected=[c for c in channels if c['type'] in (0,5) and (
-        re.search(r'^(ticket-|sug-)|compr|rang|informaci[oó]n|sugeren|promo|venta',c['name'],re.I)
+        args.all_channels or re.search(r'^(ticket-|sug-)|compr|rang|informaci[oó]n|sugeren|promo|venta',c['name'],re.I)
         or c['id']=='1503937966748205056')]
     directory=ROOT.parent/'.local'/'operations'/('payment-policy-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
     directory.mkdir(parents=True,exist_ok=False)
@@ -121,7 +133,7 @@ def main():
             scanned+=len(messages)
             for message in messages:
                 body=message.get('content','')+json.dumps(message.get('embeds',[]),ensure_ascii=False)
-                if not obsolete_payment_reference(body):
+                if not public_message_needs_refresh(body):
                     continue
                 record={'channel_id':channel['id'],'message':message,
                         'url':f"https://discord.com/channels/{args.guild}/{channel['id']}/{message['id']}"}
@@ -146,11 +158,11 @@ def main():
             if current.get('content')!=record['message'].get('content') or current.get('embeds')!=record['message'].get('embeds'):
                 raise RuntimeError('El mensaje cambió desde la inspección; no se sobrescribe')
             payload=record['replacement']
-            if obsolete_payment_reference(json.dumps(payload,ensure_ascii=False)):
-                raise RuntimeError('La sustitución todavía contiene instrucciones antiguas')
+            if public_message_needs_refresh(json.dumps(payload,ensure_ascii=False)):
+                raise RuntimeError('La sustitución todavía contiene datos que deben omitirse')
             api.request('PATCH',path,json={**payload,'allowed_mentions':{'parse':[]}})
             after=api.request('GET',path)
-            if obsolete_payment_reference(after.get('content','')+json.dumps(after.get('embeds',[]))):
+            if public_message_needs_refresh(after.get('content','')+json.dumps(after.get('embeds',[]))):
                 raise RuntimeError('No se pudo verificar la actualización del mensaje')
             results.append(record['url'])
     report={'apply':args.apply,'channels':len(selected),'messages_scanned':scanned,'bot_candidates':len(own),

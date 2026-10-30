@@ -8,7 +8,7 @@ import json
 import re
 import unicodedata
 
-from payment_policy import (PRICES, BANK_ACCOUNT, BINANCE_PAY_ID,
+from payment_policy import (PRICES, BANK_ACCOUNT, BANK_HOLDER, BINANCE_PAY_ID,
                             BINANCE_RECIPIENT_ALIASES, current_payment)
 
 def normalize(text):
@@ -169,7 +169,7 @@ o "no_admitido" para cualquier otro medio. No reclasifiques una plataforma exter
 En Binance Pay copiá la cantidad y el activo realmente enviados: USDT. USD es una cotización,
 no el activo USDT; no conviertas otras criptomonedas ni aceptes solo una valoración en dólares.
 Copiá el Pay ID/UID del DESTINATARIO en pay_id_destino si aparece. No confundas con el del emisor.
-El destinatario esperado es Fabrizio Giovanni Cocca Ducay / Fabrizio Cocca,
+El destinatario esperado (contexto interno de lectura) es {BANK_HOLDER},
 CBU/CVU {BANK_ACCOUNT}, o Binance Pay ID {BINANCE_PAY_ID}.
 El apodo puede cambiar: si el ID del destinatario coincide, no rechaces por el nombre.
 No marques como inválido porque la entidad receptora sea Wilobank en vez de Ualá.

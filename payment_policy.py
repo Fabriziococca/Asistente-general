@@ -62,6 +62,9 @@ def bank_holder_query(text):
     text = identity_text(raw)
     if re.search(r'\bno (digas|publiques|muestres|reveles|quiero saber)\b', text):
         return False
+    if re.search(r'\b(binance|usdt)\b', text) and not re.search(
+            r'\b(banco|bancari\w*|pesos|ars|cbu|cvu|transferencia)\b', text):
+        return False
     holder = re.search(r'\btitular\b', text) and (
         '?' in raw or re.search(r'\b(quien|cual|como|confirma\w*|deci\w*|indic\w*|pasa\w*)\b', text)
         or re.fullmatch(r'(el )?(nombre del )?titular( de la cuenta)?', text))

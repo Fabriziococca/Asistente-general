@@ -39,6 +39,13 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
                          'Quién es el dueño del servidor', 'hola'):
             self.assertFalse(bank_holder_query(question))
 
+    def test_binance_questions_do_not_disclose_banking_identity(self):
+        for question in ('¿Quién es el titular de Binance?', 'Quién recibe USDT',
+                         'Nombre del destinatario de Binance', '¿El receptor de Binance es el mismo?'):
+            self.assertFalse(bank_holder_query(question))
+            self.assertFalse(private_identity_reference(local_answer(question)))
+        self.assertTrue(bank_holder_query('¿Quién es el titular del CBU? Pago en pesos, no Binance'))
+
     def test_unsolicited_identity_from_model_is_blocked(self):
         for name in (BANK_HOLDER, BANK_HOLDER.upper(), BANK_HOLDER.split()[0],
                      '**' + BANK_HOLDER.replace(' ', '** **') + '**', BINANCE_RECIPIENT_ALIASES[0]):

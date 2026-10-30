@@ -5,7 +5,7 @@ import re
 
 import discord
 
-from receipts import normalize
+from receipts import normalize, requested_roles
 from payment_policy import (PAYMENT_DETAILS, PAYMENT_METHODS, PRICE_LIST,
                             BANK_HOLDER, bank_holder_query, payment_context,
                             safe_payment_response, obsolete_payment_reference)
@@ -25,7 +25,17 @@ def local_answer(content, *, suggestion=False, purchase=None):
         if re.fullmatch(r'(hola|buenas|buen dia|buenas tardes|buenas noches)( bot)?', text):
             return "¡Hola! Mandame la plataforma de contenido y la red social de la modelo que querés pedir. Administración revisará si está disponible."
         return None
-    if re.search(r'\b(ya pague|ya transferi|ya mande|ya envie|mande la foto|pase la foto|comprobante|mi rango|mi rol|mis rangos|no me (llego|llegaron|dieron|da|dan)|donde (esta|estan))\b', text):
+    desired = requested_roles(content)
+    purchase = purchase or {}
+    followup = desired and (purchase.get('has_attachment') or purchase.get('receipt_reading') or
+                            purchase.get('state') in ('delivered','receipt_pending','delivery_pending'))
+    if followup or re.search(r'\b(ya pague|ya transferi|ya mande|ya envie|mande la foto|pase la foto|comprobante|mi rango|mi rol|mis rangos|no me (llego|llegaron|dieron|da|dan)|donde (esta|estan))\b', text):
+        reading = purchase.get('receipt_reading')
+        prefix = f"El pedido es **{', '.join(purchase.get('pending_roles') or desired)}**. " if desired else ''
+        if reading == 'pending':
+            return prefix + "Tu comprobante está en el ticket y su lectura sigue pendiente. El bot reintentará automáticamente; no hace falta reenviarlo ni volver a pagar."
+        if reading == 'manual':
+            return prefix + "La lectura del comprobante quedó para revisión de administración. El ticket se conserva; no vuelvas a pagar."
         state = (purchase or {}).get('state')
         if state == 'delivered':
             return "Los rangos registrados para esta compra ya fueron entregados. Si no podés ver algún canal, decime cuál para revisar el acceso."

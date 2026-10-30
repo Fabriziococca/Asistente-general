@@ -37,6 +37,22 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('sigue abierto',answer)
         self.assertNotIn('ya fueron entregados',answer)
 
+    def test_bare_rank_after_file_is_a_purchase_followup(self):
+        answer=local_answer('diamante',purchase={'state':'unknown','has_attachment':True})
+        self.assertIn('todavía no',answer)
+        self.assertNotIn('4.700',answer)
+
+    async def test_receipt_state_survives_missing_recent_history_without_calling_google(self):
+        cog,_,message=fixture()
+        message.content='Diamante'
+        cog.inbox.receipt_status.return_value='pending'
+        cog.payments.summary.return_value={'state':'unknown','roles':[],'pending_roles':['Diamante']}
+        cog._generate_content_with_rotation=AsyncMock()
+        await cog.handle_support_query(message)
+        cog._generate_content_with_rotation.assert_not_awaited()
+        self.assertIn('**Diamante**',message.reply.await_args.args[0])
+        self.assertIn('reintentará',message.reply.await_args.args[0])
+
     def test_suggestion_does_not_invite_prepayment(self):
         answer=local_answer('Pasame el alias para pagar',suggestion=True)
         self.assertIn('confirmación',answer)

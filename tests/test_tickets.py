@@ -8,6 +8,7 @@ import warnings
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 from cogs.tickets import Tickets, ROLES, FABRIZIO_ID
+from ticket_inbox import ReceiptReviewRequired
 from receipts import PRICES
 from test_receipts import reading
 
@@ -50,7 +51,8 @@ def fixture():
                       completed=AsyncMock(return_value=[]), reopen=AsyncMock(return_value=None),
                       summary=AsyncMock(return_value={'state':'unknown','roles':[]}))
     cog.inbox = NS(record=AsyncMock(),claim=AsyncMock(return_value={'attempts':1}),
-                   done=AsyncMock(),retry=AsyncMock())
+                   done=AsyncMock(),retry=AsyncMock(),manual=AsyncMock(),progress=AsyncMock(),
+                   receipt_status=AsyncMock(return_value=None))
     author = NS(id=123, bot=False, guild_permissions=NS(administrator=False), roles=[])
     author.add_roles = AsyncMock()
     roles = {r['id']: NS(id=r['id']) for r in ROLES.values()}
@@ -59,7 +61,7 @@ def fixture():
     channel = NS(id=456, name='ticket-test', category_id=0, sent=[], delete=AsyncMock())
     async def send(content=None, **kw):
         channel.sent.append(content)
-        return NS(edit=AsyncMock())
+        return NS(id=10000+len(channel.sent),edit=AsyncMock())
     channel.send = AsyncMock(side_effect=send)
     def history(**kw):
         async def iterate():
@@ -110,6 +112,18 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         await cog.handle_receipt_image(msg)
         self.assertEqual(len(cog._generate_content_with_rotation.await_args.args[1]), 1)
 
+    async def test_partial_reading_of_two_files_is_not_marked_completed(self):
+        cog,conn,msg=fixture()
+        conn.row={'estado':'abierto','user_id':msg.author.id}
+        msg.attachments=[attachment(b'first'),attachment(b'second')]
+        cog._generate_content_with_rotation=AsyncMock(return_value=json.dumps({'comprobantes':[reading()]}))
+        cog.payments.save.return_value=[dict(pago_id=1,user_id=msg.author.id,ticket_id=msg.channel.id)]
+        cog._handle_pending_purchase=AsyncMock(return_value=True)
+        await cog._process_inbox_message(msg)
+        cog.inbox.done.assert_not_awaited()
+        cog.inbox.manual.assert_awaited_once()
+        self.assertTrue(any('no devolvió una lectura' in (text or '') for text in msg.channel.sent))
+
     async def test_known_receipt_uses_no_ai_and_no_new_payment(self):
         cog, _, msg = fixture()
         msg.attachments = [attachment()]
@@ -159,7 +173,8 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         msg.attachments = [attachment(b'first'),attachment(b'second')]
         cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes':[reading(),reading(1)]}))
         cog.payments.save.return_value = [dict(pago_id=1,user_id=123,ticket_id=456)]*2
-        await cog.handle_receipt_image(msg)
+        with self.assertRaises(ReceiptReviewRequired):
+            await cog.handle_receipt_image(msg)
         self.assertTrue(any('misma operación' in (s or '') for s in msg.channel.sent))
 
     async def test_partial_status_names_the_order_and_uncovered_role(self):
@@ -175,7 +190,8 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog, conn, msg = fixture()
         msg.attachments = [attachment()]
         cog._generate_content_with_rotation = AsyncMock(return_value='not JSON')
-        await cog.handle_receipt_image(msg)
+        with self.assertRaises(json.JSONDecodeError):
+            await cog.handle_receipt_image(msg)
         cog.payments.save.assert_not_awaited()
         self.assertTrue(any('conservar=TRUE' in call.args[0] for call in conn.execute.await_args_list))
         self.assertTrue(any(str(FABRIZIO_ID) in (text or '') for text in msg.channel.sent))
@@ -185,7 +201,8 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         msg.attachments = [attachment()]
         cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes': [reading()]}))
         cog.payments.save.side_effect = RuntimeError('DB down')
-        await cog.handle_receipt_image(msg)
+        with self.assertRaises(RuntimeError):
+            await cog.handle_receipt_image(msg)
         msg.author.add_roles.assert_not_awaited()
 
     async def test_delivery_checks_all_roles_and_persists_success(self):

@@ -13,6 +13,7 @@ from receipts import parse_receipts, choose_roles, vision_prompt
 from test_receipts import reading
 from test_tickets import fixture, attachment, delivery
 from ticket_messages import ticket_welcome
+from ticket_inbox import ReceiptReviewRequired
 
 
 class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
@@ -205,7 +206,8 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         message.attachments=[attachment()]
         cog.payments.known.return_value={'user_id':123,'ticket_id':456,'moneda':'USD','metodo_pago':'paypal'}
         cog._generate_content_with_rotation=AsyncMock()
-        await cog.handle_receipt_image(message)
+        with self.assertRaises(ReceiptReviewRequired):
+            await cog.handle_receipt_image(message)
         cog._generate_content_with_rotation.assert_not_awaited()
         cog.payments.save.assert_not_awaited()
         message.author.add_roles.assert_not_awaited()
@@ -216,6 +218,20 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         await cog._fulfill_delivery(dict(delivery(),moneda='USD',metodo_pago='paypal'),message.channel,message.guild)
         cog.payments.attempt.assert_not_awaited()
         message.author.add_roles.assert_not_awaited()
+
+    async def test_permissive_binance_audit_notice_is_not_a_failed_reading(self):
+        cog,conn,message=fixture()
+        conn.row={'estado':'abierto','user_id':message.author.id}
+        message.attachments=[attachment()]
+        cog._generate_content_with_rotation=AsyncMock(return_value=json.dumps({'comprobantes':[
+            reading(monto='4.50',moneda='USDT',metodo_pago='binance',destinatario='UnApodoNuevo')]}))
+        cog.payments.save.return_value=[dict(pago_id=1,user_id=message.author.id,ticket_id=message.channel.id)]
+        cog._handle_pending_purchase=AsyncMock(return_value=True)
+        await cog._process_inbox_message(message)
+        cog.inbox.done.assert_awaited_once()
+        cog.inbox.manual.assert_not_awaited()
+        cog.inbox.retry.assert_not_awaited()
+        self.assertTrue(any('revisar destinatario' in (text or '') for text in message.channel.sent))
 
     def test_existing_ticket_message_is_rewritten_with_current_welcome(self):
         from scripts.refresh_payment_messages import replacement

@@ -105,13 +105,20 @@ def parse_receipts(text, count):
             issues.append(f"archivo {index + 1}: medio o moneda no admitidos; solo transferencia ARS o Binance Pay en USDT")
             continue
         # La marca bancaria y el número de operación NO son requisitos.
-        recipient = normalize(item.get("destinatario", ""))
+        recipient = normalize(item.get("destinatario") or "")
         account = re.sub(r"\D", "", str(item.get("cuenta_destino", "")))
         if method == 'binance':
             pay_id = re.sub(r'\D', '', str(item.get('pay_id_destino') or '')) or account
             recipient_ok = pay_id == BINANCE_PAY_ID if pay_id else (
                 any(normalize(alias) == recipient.strip() for alias in BINANCE_RECIPIENT_ALIASES) or
                 ('fabrizio' in recipient and 'cocca' in recipient))
+            # Política permisiva del propietario: un apodo nuevo sin ID visible
+            # no bloquea un comprobante Binance/USDT legible. Se avisa para auditar.
+            nickname_visible = recipient.strip() and recipient.strip() not in {
+                'null','none','no visible','desconocido','no legible','n/a','sin destinatario'}
+            if not pay_id and nickname_visible and not recipient_ok:
+                recipient_ok = True
+                issues.append(f'archivo {index + 1}: Binance muestra solo un apodo; revisar destinatario porque no aparece el Pay ID')
         else:
             recipient_ok = ("fabrizio" in recipient and "cocca" in recipient) or account == BANK_ACCOUNT
         if not recipient_ok:

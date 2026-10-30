@@ -74,6 +74,8 @@ Solo transferencia en pesos argentinos a CBU/CVU y USDT por Binance Pay. El Pay 
 
 Precios internacionales sin descuento: Diamante 4,50 USDT, Oro 4 USDT, Plata 2 USDT y petición 4 USDT. No se aceptan conversiones de USD ni de otras criptomonedas. El destinatario se valida por ID cuando aparece, sin depender de que el apodo público permanezca igual.
 
+Si un comprobante Binance/USDT legible solo muestra un apodo nuevo, la política permisiva permite continuar y avisa a administración para auditar el destinatario. Un ID de destino explícitamente diferente no se aprueba. La falta total de destinatario sigue requiriendo revisión.
+
 La política se controla al extraer, guardar, preparar y entregar. Un método anterior no vuelve a habilitarse por un mensaje repetido ni por la recuperación de pendientes. El contexto y las respuestas automáticas omiten instrucciones de cobro obsoletas.
 
 Los pagos históricos se conservan con su moneda y método originales. `/finanzas` muestra importes registrados brutos, separa ARS, USDT y USD históricos y no aplica descuentos, conversiones ni comisiones supuestas. No se modifica retroactivamente el historial ni se revocan rangos comprados antes del cambio.

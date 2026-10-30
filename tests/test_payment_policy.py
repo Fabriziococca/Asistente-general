@@ -43,6 +43,19 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(receipts)
         self.assertTrue(issues)
 
+    def test_changed_nickname_without_visible_id_is_accepted_with_audit_notice(self):
+        receipts,issues=parse_receipts(json.dumps({'comprobantes':[
+            reading(monto='4.50',moneda='USDT',metodo_pago='binance',destinatario='UnApodoNuevo')]}),1)
+        self.assertEqual(len(receipts),1)
+        self.assertTrue(any('revisar destinatario' in issue for issue in issues))
+
+    def test_missing_binance_recipient_does_not_look_like_an_anonymous_nickname(self):
+        for recipient in (None,'','null','no visible','desconocido'):
+            receipts,issues=parse_receipts(json.dumps({'comprobantes':[
+                reading(monto='4.50',moneda='USDT',metodo_pago='binance',destinatario=recipient)]}),1)
+            self.assertFalse(receipts)
+            self.assertTrue(issues)
+
     def test_usd_quote_is_not_a_usdt_payment(self):
         receipts,issues=parse_receipts(json.dumps({'comprobantes':[
             reading(moneda='USD',metodo_pago='binance',pay_id_destino=BINANCE_PAY_ID)]}),1)

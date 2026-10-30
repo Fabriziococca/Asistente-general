@@ -29,12 +29,18 @@ def local_answer(content, *, suggestion=False, purchase=None):
     purchase = purchase or {}
     followup = desired and (purchase.get('has_attachment') or purchase.get('receipt_reading') or
                             purchase.get('state') in ('delivered','receipt_pending','delivery_pending'))
+    if purchase.get('has_attachment') or purchase.get('receipt_reading') or purchase.get('state') in ('receipt_pending','delivery_pending'):
+        followup = followup or text in ('','y','ya','listo','hola','buenas','ok') or re.search(
+            r'\b(que paso|cuando|me faltan?|sigo esperando|estafa|reclamo|nadie responde|y ahora)\b', text)
     if followup or re.search(r'\b(ya pague|ya transferi|ya mande|ya envie|mande la foto|pase la foto|comprobante|mi rango|mi rol|mis rangos|no me (llego|llegaron|dieron|da|dan)|donde (esta|estan))\b', text):
         reading = purchase.get('receipt_reading')
         prefix = f"El pedido es **{', '.join(purchase.get('pending_roles') or desired)}**. " if desired else ''
         if reading == 'pending':
             return prefix + "Tu comprobante está en el ticket y su lectura sigue pendiente. El bot reintentará automáticamente; no hace falta reenviarlo ni volver a pagar."
         if reading == 'manual':
+            if purchase.get('state') == 'delivered':
+                return ("Los rangos registrados figuran entregados. Hay un comprobante que sigue para revisión "
+                        "de administración; si te falta un rango, decime cuál. No vuelvas a pagar.")
             return prefix + "La lectura del comprobante quedó para revisión de administración. El ticket se conserva; no vuelvas a pagar."
         state = (purchase or {}).get('state')
         if state == 'delivered':

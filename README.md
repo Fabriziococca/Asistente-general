@@ -62,6 +62,18 @@ El modo manual se respeta durante la recuperación. Las consultas demoradas tien
 
 El aviso semanal conserva su fecha en Neon; reiniciar o reconectar ya no dispara otro @everyone. La primera ejecución de esta versión inicia ese calendario sin emitir un broadcast.
 
+## Recuperación entre pago, acceso y confirmación
+
+La recuperación comprueba también pagos guardados sin entrega preparada y entregas interrumpidas durante el tercer intento. En ese último caso verifica los roles reales: confirma los que ya existen o deriva a administración, sin hacer una cuarta asignación. Si administración entrega el rango manualmente y el ticket sigue en automático, verifica ese acceso y concilia la entrega sin otro cobro ni reasignación; así otros rangos pagados pueden continuar. Los fallos tardíos no sobrescriben una entrega completada. Los permisos y el modo manual se respetan al retomar cada caso; un ticket con error no frena los demás.
+
+`pagos.aviso_pendiente` conserva las confirmaciones y derivaciones a administración que todavía no pudieron enviarse. El aviso se recupera sin volver a cobrar ni asignar roles. Los pagos pendientes sin rango definido reciben una sola consulta; no se repite cada cinco minutos. Esta marca se activa en operaciones nuevas y no reanuncia el historial previo al despliegue. Un aviso sin confirmar protege el ticket frente al borrado automático.
+
+Una respuesta de IA que omite un archivo o no logra leer sus datos se reintenta conservando los comprobantes ya registrados. Los archivos que ya constan en Neon no vuelven a enviarse a la IA. Si desaparece el original de Discord, queda para revisión humana, nunca como lectura completada. Los importes ARS escritos con miles (`4.700`) se interpretan como 4700; las cantidades USDT conservan su interpretación decimal. Mercado Pago y Ualá se reconocen como transferencias ARS.
+
+Un pedido de varios rangos puede pagarse con distintas monedas: cada rango debe quedar cubierto íntegramente por su precio ARS o USDT. No se convierten monedas ni se suman para cubrir un mismo rango. Si la combinación no alcanza o es ambigua, se conservan los importes y se pide revisión sin indicar un faltante inventado.
+
+Ante un reclamo de acceso de una compra con entrega registrada, el bot consulta Discord y recupera únicamente los roles documentados si faltan. Las consultas breves de un cliente que espera reciben el estado real sin reiniciar la venta ni depender de Gemini. La reparación no reconstruye compras históricas sin una entrega identificada ni modifica permisos generales del servidor.
+
 ## Operación gratuita y salud
 
 El supervisor recrea el cliente después de fallos transitorios, cierra el pool anterior y conserva los trabajos en Neon. Un módulo esencial que no carga aborta ese cliente; no se sincroniza un árbol incompleto de comandos. Las dependencias directas se fijan a versiones verificadas.

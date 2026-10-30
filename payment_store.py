@@ -3,7 +3,7 @@
 from decimal import Decimal
 from uuid import uuid4
 
-from receipts import PRICES, choose_roles
+from receipts import PRICES, choose_roles, split_purchase
 from payment_policy import current_payment
 
 
@@ -18,6 +18,7 @@ ALTER TABLE pagos ADD COLUMN IF NOT EXISTS roles_asignados TEXT[];
 ALTER TABLE pagos ADD COLUMN IF NOT EXISTS entrega_estado TEXT;
 ALTER TABLE pagos ADD COLUMN IF NOT EXISTS entrega_intentos INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE pagos ADD COLUMN IF NOT EXISTS entrega_actualizada TIMESTAMPTZ;
+ALTER TABLE pagos ADD COLUMN IF NOT EXISTS aviso_pendiente BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE UNIQUE INDEX IF NOT EXISTS pagos_comprobante_hash_unique
     ON pagos (comprobante_hash) WHERE comprobante_hash IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS pagos_operacion_key_unique
@@ -70,13 +71,13 @@ class PaymentStore:
                 for receipt in receipts:
                     row = await conn.fetchrow("""
                         INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago,
-                            comprobante_hash, operacion_key, guild_id, entrega_estado)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                            comprobante_hash, operacion_key, guild_id, entrega_estado, entrega_actualizada, aviso_pendiente)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP,$11)
                         ON CONFLICT DO NOTHING RETURNING *
                     """, message.author.id, message.channel.id, receipt.amount, receipt.currency,
                         "Sugerencia" if suggestion else "Pendiente de rango", receipt.method,
                         digests[receipt.index], receipt.operation_key, message.guild.id,
-                        "entregado" if suggestion else "pendiente")
+                        "entregado" if suggestion else "pendiente", not suggestion)
                     if not row:
                         row = await conn.fetchrow("""SELECT * FROM pagos
                             WHERE comprobante_hash = $1 OR (operacion_key IS NOT NULL AND operacion_key = $2)
@@ -129,26 +130,34 @@ class PaymentStore:
                 for row in rows:
                     totals[row['moneda']] = totals.get(row['moneda'], Decimal(0)) + row['monto']
                 # Nunca se suman pesos y cripto entre sí ni se utiliza saldo de medios retirados.
+                split = split_purchase(totals, desired)
                 for currency, amount in totals.items():
                     roles, missing = choose_roles(amount, currency, desired)
+                    if not roles and currency in split:
+                        roles = split[currency]
                     if not roles:
                         continue
                     delivery_id = str(uuid4())
                     ids = [row['pago_id'] for row in rows if row['moneda'] == currency]
                     await conn.execute("""UPDATE pagos SET entrega_id=$2, roles_asignados=$3,
-                        concepto=$4, entrega_estado='preparado', entrega_actualizada=CURRENT_TIMESTAMP
+                        concepto=$4, entrega_estado='preparado', entrega_actualizada=CURRENT_TIMESTAMP, aviso_pendiente=FALSE
                         WHERE pago_id=ANY($1::int[])""", ids, delivery_id, list(roles), ", ".join(roles))
                     row = await conn.fetchrow("SELECT * FROM pagos WHERE entrega_id=$1 ORDER BY pago_id LIMIT 1", delivery_id)
                     return {"delivery": dict(row)}
                 currency = next(iter(totals))
                 _, missing = choose_roles(totals[currency], currency, desired)
-                return {"totals": totals, "missing": missing, "desired": tuple(desired)}
+                pending_ids = [row['pago_id'] for row in rows]
+                if len(totals) > 1:
+                    return {"totals":totals,"missing":None,"desired":tuple(desired),"mixed":True,"pending_ids":pending_ids}
+                return {"totals": totals, "missing": missing, "desired": tuple(desired),"pending_ids":pending_ids}
 
     async def attempt(self, delivery_id):
         async with self.pool.acquire(timeout=10) as conn:
             return await conn.fetchval("""UPDATE pagos SET entrega_intentos=entrega_intentos+1,
                 entrega_actualizada=CURRENT_TIMESTAMP WHERE entrega_id=$1
-                AND entrega_estado IN ('preparado','reintentar') RETURNING entrega_intentos""", delivery_id)
+                AND entrega_estado IN ('preparado','reintentar') AND entrega_intentos < 3
+                AND NOT EXISTS(SELECT 1 FROM tickets t WHERE t.channel_id=pagos.ticket_id AND t.estado='pausado')
+                RETURNING entrega_intentos""", delivery_id)
 
     async def finish(self, delivery_id, ticket_id):
         async with self.pool.acquire(timeout=10) as conn:
@@ -161,7 +170,8 @@ class PaymentStore:
                 ticket = await conn.fetchrow("SELECT rangos_solicitados FROM tickets WHERE channel_id=$1 FOR UPDATE", ticket_id)
                 assigned = set(delivery['roles_asignados'] or ())
                 remaining = tuple(name for name in (ticket['rangos_solicitados'] or ()) if name not in assigned) if ticket else ()
-                await conn.execute("UPDATE pagos SET entrega_estado='entregado', entrega_actualizada=CURRENT_TIMESTAMP WHERE entrega_id=$1", delivery_id)
+                await conn.execute("""UPDATE pagos SET entrega_estado='entregado', entrega_actualizada=CURRENT_TIMESTAMP,
+                    aviso_pendiente=TRUE WHERE entrega_id=$1 AND entrega_estado IN ('preparado','reintentar','manual')""", delivery_id)
                 pending = await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM pagos WHERE ticket_id=$1
                     AND entrega_estado IN ('pendiente','preparado','reintentar','manual'))""", ticket_id)
                 await conn.execute("""UPDATE tickets SET estado=CASE WHEN estado='pausado' THEN estado
@@ -189,15 +199,48 @@ class PaymentStore:
 
     async def failed(self, delivery_id, attempts):
         async with self.pool.acquire(timeout=10) as conn:
-            await conn.execute("UPDATE pagos SET entrega_estado=$2, entrega_actualizada=CURRENT_TIMESTAMP WHERE entrega_id=$1",
+            await conn.execute("""UPDATE pagos SET entrega_estado=$2, entrega_actualizada=CURRENT_TIMESTAMP,
+                aviso_pendiente=($2='manual')
+                WHERE entrega_id=$1 AND entrega_estado IN ('preparado','reintentar')""",
                                delivery_id, 'manual' if attempts >= 3 else 'reintentar')
+
+    async def paused(self, ticket_id):
+        async with self.pool.acquire(timeout=10) as conn:
+            return await conn.fetchval("SELECT estado='pausado' FROM tickets WHERE channel_id=$1", ticket_id)
+
+    async def notice(self, delivery_id):
+        async with self.pool.acquire(timeout=10) as conn:
+            return await conn.fetchrow("""SELECT * FROM pagos WHERE entrega_id=$1
+                AND entrega_estado IN ('entregado','manual') AND aviso_pendiente ORDER BY pago_id LIMIT 1""", delivery_id)
+
+    async def notified(self, delivery_id):
+        async with self.pool.acquire(timeout=10) as conn:
+            await conn.execute("UPDATE pagos SET aviso_pendiente=FALSE WHERE entrega_id=$1 AND entrega_estado IN ('entregado','manual')", delivery_id)
+
+    async def pending_notified(self, ticket_id, user_id, payment_ids):
+        async with self.pool.acquire(timeout=10) as conn:
+            await conn.execute("""UPDATE pagos SET aviso_pendiente=FALSE
+                WHERE ticket_id=$1 AND user_id=$2 AND entrega_estado='pendiente'
+                AND pago_id=ANY($3::int[])""", ticket_id, user_id, list(payment_ids))
+
+    async def pending_purchases(self):
+        async with self.pool.acquire(timeout=10) as conn:
+            return await conn.fetch("""SELECT DISTINCT p.ticket_id,p.user_id,p.guild_id FROM pagos p
+                JOIN tickets t ON t.channel_id=p.ticket_id
+                WHERE p.entrega_estado='pendiente' AND p.aviso_pendiente
+                AND COALESCE(p.entrega_actualizada,p.fecha_pago) < CURRENT_TIMESTAMP - INTERVAL '2 minutes'
+                AND t.estado IS DISTINCT FROM 'pausado'
+                AND ((p.moneda='ARS' AND (p.metodo_pago IS NULL OR p.metodo_pago IN ('transferencia','mercadopago','uala','otro')))
+                    OR (p.moneda='USDT' AND p.metodo_pago='binance'))
+                ORDER BY p.ticket_id,p.user_id,p.guild_id LIMIT 25""")
 
     async def recoverable(self):
         async with self.pool.acquire(timeout=10) as conn:
             return await conn.fetch("""SELECT DISTINCT ON (p.entrega_id) p.* FROM pagos p
                 JOIN tickets t ON t.channel_id=p.ticket_id
-                WHERE p.entrega_estado IN ('preparado','reintentar') AND p.entrega_intentos < 3
-                AND p.entrega_actualizada < CURRENT_TIMESTAMP - INTERVAL '2 minutes'
+                WHERE ((p.entrega_estado IN ('preparado','reintentar','manual')
+                    AND COALESCE(p.entrega_actualizada,p.fecha_pago) < CURRENT_TIMESTAMP - INTERVAL '2 minutes')
+                    OR (p.entrega_estado IN ('entregado','manual') AND p.aviso_pendiente))
                 AND ((p.moneda='ARS' AND (p.metodo_pago IS NULL OR p.metodo_pago IN ('transferencia','mercadopago','uala','otro')))
                     OR (p.moneda='USDT' AND p.metodo_pago='binance'))
                 AND t.estado IS DISTINCT FROM 'pausado'

@@ -49,7 +49,10 @@ def fixture():
                       prepare=AsyncMock(return_value={'empty': True}),
                       attempt=AsyncMock(return_value=1), finish=AsyncMock(return_value={'remaining':(), 'pending':False}), failed=AsyncMock(),
                       completed=AsyncMock(return_value=[]), reopen=AsyncMock(return_value=None),
-                      summary=AsyncMock(return_value={'state':'unknown','roles':[]}))
+                      summary=AsyncMock(return_value={'state':'unknown','roles':[]}),
+                      paused=AsyncMock(return_value=False),notice=AsyncMock(return_value=dict(delivery(),entrega_estado='entregado')),
+                      notified=AsyncMock(),pending_notified=AsyncMock(),pending_purchases=AsyncMock(return_value=[]),
+                      recoverable=AsyncMock(return_value=[]))
     cog.inbox = NS(record=AsyncMock(),claim=AsyncMock(return_value={'attempts':1}),
                    done=AsyncMock(),retry=AsyncMock(),manual=AsyncMock(),progress=AsyncMock(),
                    receipt_status=AsyncMock(return_value=None))
@@ -112,7 +115,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         await cog.handle_receipt_image(msg)
         self.assertEqual(len(cog._generate_content_with_rotation.await_args.args[1]), 1)
 
-    async def test_partial_reading_of_two_files_is_not_marked_completed(self):
+    async def test_partial_reading_of_two_files_is_queued_without_losing_the_readable_file(self):
         cog,conn,msg=fixture()
         conn.row={'estado':'abierto','user_id':msg.author.id}
         msg.attachments=[attachment(b'first'),attachment(b'second')]
@@ -121,8 +124,10 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog._handle_pending_purchase=AsyncMock(return_value=True)
         await cog._process_inbox_message(msg)
         cog.inbox.done.assert_not_awaited()
-        cog.inbox.manual.assert_awaited_once()
-        self.assertTrue(any('no devolvió una lectura' in (text or '') for text in msg.channel.sent))
+        cog.inbox.manual.assert_not_awaited()
+        cog.inbox.retry.assert_awaited_once()
+        cog.payments.save.assert_awaited_once()
+        self.assertEqual(len(cog.payments.save.await_args.args[1]),1)
 
     async def test_known_receipt_uses_no_ai_and_no_new_payment(self):
         cog, _, msg = fixture()
@@ -209,7 +214,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog, _, msg = fixture()
         msg.author.roles = [NS(id=r['id']) for r in ROLES.values()]
         await cog._fulfill_delivery(delivery(), msg.channel, msg.guild)
-        self.assertEqual(len(msg.author.add_roles.await_args.args), 3)
+        msg.author.add_roles.assert_not_awaited()
         msg.guild.fetch_member.assert_awaited_once_with(123)
         cog.payments.finish.assert_awaited_once_with('test', 456)
 

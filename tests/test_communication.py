@@ -53,6 +53,33 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('**Diamante**',message.reply.await_args.args[0])
         self.assertIn('reintentará',message.reply.await_args.args[0])
 
+    def test_customer_waiting_or_worried_gets_status_without_restarting_the_sale(self):
+        for question in ('??','y ahora','me falta mi rango','sigo esperando','es una estafa?','hola'):
+            answer=local_answer(question,purchase={'state':'unknown','receipt_reading':'pending'})
+            self.assertIn('reintentará',answer)
+            self.assertIn('no hace falta reenviarlo ni volver a pagar',answer)
+
+    async def test_deleted_receipt_goes_to_manual_review_instead_of_being_marked_done(self):
+        cog,_,message=fixture()
+        cog.bot.guilds=[]
+        cog.bot.get_channel=lambda cid:message.channel
+        cog.inbox.pending=AsyncMock(return_value=[{'message_id':message.id,'channel_id':message.channel.id,'is_receipt':True}])
+        message.channel.fetch_message=AsyncMock(side_effect=discord.NotFound(NS(status=404,reason='Not found'),'gone'))
+        await cog._recover_messages()
+        cog.inbox.manual.assert_awaited_once()
+        cog.inbox.done.assert_not_awaited()
+        self.assertTrue(any('archivo original' in (text or '') for text in message.channel.sent))
+
+    async def test_pending_new_receipt_is_not_hidden_by_an_older_completed_delivery(self):
+        cog,_,message=fixture()
+        message.content='no tengo mi rango'
+        cog.payments.summary.return_value={'state':'delivered','roles':['Diamante']}
+        cog.inbox.receipt_status.return_value='pending'
+        cog._check_registered_purchase=AsyncMock(return_value=('Diamante',))
+        await cog.handle_support_query(message)
+        cog._check_registered_purchase.assert_not_awaited()
+        self.assertIn('reintentará',message.reply.await_args.args[0])
+
     def test_suggestion_does_not_invite_prepayment(self):
         answer=local_answer('Pasame el alias para pagar',suggestion=True)
         self.assertIn('confirmación',answer)

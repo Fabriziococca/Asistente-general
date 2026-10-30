@@ -38,10 +38,12 @@ def attachment_mime(attachment):
             "webp": "image/webp", "pdf": "application/pdf"}.get(suffix)
 
 
-def money(value):
+def money(value, currency=None):
     if isinstance(value, bool) or value is None:
         raise ValueError("Monto ausente o inválido")
     text = str(value).strip().replace("$", "").replace(" ", "")
+    if currency == 'ARS' and re.fullmatch(r'\d{1,3}(?:\.\d{3})+', text):
+        text = text.replace('.', '')
     if "," in text and "." in text:
         text = text.replace(".", "").replace(",", ".") if text.rfind(",") > text.rfind(".") else text.replace(",", "")
     elif "," in text:
@@ -71,6 +73,17 @@ class Receipt:
         return sha256(f"{op}:{self.currency}:{self.amount}".encode()).hexdigest()
 
 
+class ReadingIssue(str):
+    def __new__(cls, text, *, retryable=False):
+        instance = super().__new__(cls, text)
+        instance.retryable = retryable
+        return instance
+
+
+class IncompleteReceiptReading(RuntimeError):
+    """La IA omitió datos; los archivos legibles ya pueden haberse registrado."""
+
+
 def parse_receipts(text, count):
     """Acepta diferencias visuales; no confunde strings 'false' con booleanos."""
     clean = text.strip()
@@ -91,16 +104,18 @@ def parse_receipts(text, count):
             raise ValueError("Índice de archivo inválido o repetido")
         seen.add(index)
         if item.get("es_comprobante") is not True:
-            issues.append(f"archivo {index + 1}: no se pudo leer como comprobante")
+            issues.append(ReadingIssue(f"archivo {index + 1}: no se pudo leer como comprobante",retryable=True))
             continue
         if item.get("pago_completado") is not None and type(item.get("pago_completado")) is not bool:
-            issues.append(f"archivo {index + 1}: estado de pago ilegible")
+            issues.append(ReadingIssue(f"archivo {index + 1}: estado de pago ilegible",retryable=True))
             continue
         if item.get("pago_completado") is False:
             issues.append(f"archivo {index + 1}: aparece pendiente o sin ejecutar")
             continue
-        currency = str(item.get("moneda", "")).upper()
-        method = str(item.get("metodo_pago", "")).lower()
+        currency = str(item.get("moneda", "")).strip().upper()
+        method = normalize(item.get("metodo_pago", "")).strip()
+        if currency == 'ARS' and method in {'mercado pago','mercadopago','mercado_pago','uala','transferencia bancaria'}:
+            method = 'transferencia'
         if not current_payment(currency, method):
             issues.append(f"archivo {index + 1}: medio o moneda no admitidos; solo transferencia ARS o Binance Pay en USDT")
             continue
@@ -125,15 +140,15 @@ def parse_receipts(text, count):
             issues.append(f"archivo {index + 1}: falta confirmar el destinatario")
             continue
         try:
-            amount = money(item.get("monto"))
+            amount = money(item.get("monto"), currency)
         except ValueError:
-            issues.append(f"archivo {index + 1}: no se pudo leer el importe")
+            issues.append(ReadingIssue(f"archivo {index + 1}: no se pudo leer el importe",retryable=True))
             continue
         operation = item.get("numero_operacion")
         accepted.append(Receipt(index, amount, currency, method,
                                 operation if isinstance(operation, str) else None))
     for missing in set(range(count)) - seen:
-        issues.append(f"archivo {missing + 1}: la IA no devolvió una lectura")
+        issues.append(ReadingIssue(f"archivo {missing + 1}: la IA no devolvió una lectura", retryable=True))
     return accepted, issues
 
 
@@ -149,6 +164,20 @@ def choose_roles(amount, currency, desired=()):
             if amount == sum((PRICES[r][currency] for r in roles), Decimal(0)):
                 return roles, Decimal(0)
     return (), None
+
+
+def split_purchase(totals, desired):
+    """Asigna rangos enteros a monedas, sin convertir ni sumar monedas distintas."""
+    currencies = tuple(currency for currency in totals if currency in ('ARS','USDT'))
+    if not desired or len(currencies) < 2:
+        return {}
+    for assignment in itertools.product(currencies, repeat=len(desired)):
+        plan = {currency:tuple(role for role,selected in zip(desired,assignment) if selected==currency)
+                for currency in currencies}
+        if all(sum((PRICES[role][currency] for role in roles), Decimal(0)) <= totals[currency]
+               for currency,roles in plan.items()):
+            return {currency:roles for currency,roles in plan.items() if roles}
+    return {}
 
 
 def vision_prompt(count):

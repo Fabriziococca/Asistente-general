@@ -90,6 +90,21 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(money('6.400,00'), 6400)
         self.assertEqual(money('6,400.00'), 6400)
 
+    def test_peso_thousands_are_not_mistaken_for_cents(self):
+        for amount in ('4.700','4.700,00','4700'):
+            receipts,issues=parse(reading(monto=amount))
+            self.assertFalse(issues)
+            self.assertEqual(receipts[0].amount,4700)
+        self.assertEqual(money('1.234.567', 'ARS'),1234567)
+        self.assertEqual(money('4.500', 'USDT'),Decimal('4.50'))
+
+    def test_known_bank_wallet_names_are_normalized_but_retired_methods_are_not(self):
+        for method in ('mercado pago','MercadoPago','Ualá','transferencia bancaria'):
+            receipts,issues=parse(reading(metodo_pago=method,moneda=' ars '))
+            self.assertFalse(issues)
+            self.assertEqual(receipts[0].method,'transferencia')
+        self.assertFalse(parse(reading(metodo_pago='paypal'))[0])
+
     def test_role_questions_are_not_purchase_orders(self):
         self.assertFalse(requested_roles('¿Diamante incluye Oro y Plata?'))
         self.assertEqual(requested_roles('Quiero los tres'), ('Diamante', 'Oro', 'Plata'))

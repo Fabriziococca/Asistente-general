@@ -1,0 +1,165 @@
+"""Retira instrucciones de cobro antiguas de mensajes propios, sin borrar mensajes.
+
+Por defecto solo inspecciona. --apply guarda copia previa y edita mensajes del bot.
+Los mensajes de otras personas se informan para edición con la cuenta propietaria.
+"""
+import argparse
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import re
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
+
+import requests
+from dotenv import dotenv_values
+
+from payment_policy import PAYMENT_DETAILS, PAYMENT_METHODS, BINANCE_PAY_ID, obsolete_payment_reference
+from ticket_messages import ticket_welcome
+
+
+def redacted(text):
+    text=re.sub(r'\bpay[\W_]*pal\b','medio anterior (retirado)',str(text),flags=re.I)
+    return re.sub(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}','[dato de cobro retirado]',text,flags=re.I)
+
+
+def replacement(message,suggestion=False):
+    embeds=message.get('embeds',[])
+    if any('Zona de Compras' in (e.get('title') or '') or 'Petición Única' in (e.get('title') or '') for e in embeds):
+        content,embed=ticket_welcome(suggestion)
+        return {'content':content,'embeds':[embed.to_dict()]}
+    content=message.get('content','')
+    if obsolete_payment_reference(content):
+        if re.search(r'\b(registr\w*|entreg\w*|comprobante)\b',content,re.I):
+            content=redacted(content)+'\n\n'+PAYMENT_METHODS
+        else:
+            content=PAYMENT_METHODS+'\n\n'+PAYMENT_DETAILS
+    updated=[]
+    for original in embeds:
+        embed={k:v for k,v in original.items() if k not in {'provider','video'}}
+        for key in ('title','description'):
+            if obsolete_payment_reference(embed.get(key,'')):
+                embed[key]=redacted(embed[key])
+        fields=[]
+        for field in embed.get('fields',[]):
+            if obsolete_payment_reference(field.get('name','')+' '+field.get('value','')):
+                fields.append({'name':'Medios de cobro vigentes','value':PAYMENT_DETAILS,'inline':False})
+            else:
+                fields.append(field)
+        if fields:
+            embed['fields']=fields
+        if obsolete_payment_reference(embed.get('footer',{}).get('text','')):
+            embed['footer']={'text':'Información de cobro actualizada: transferencia ARS y Binance Pay en USDT.'}
+        for key in ('url','image','thumbnail','author'):
+            if obsolete_payment_reference(json.dumps(embed.get(key,''))):
+                embed.pop(key,None)
+        updated.append(embed)
+    return {'content':content,'embeds':updated}
+
+
+def owner_replacement(content):
+    lines=[]
+    for line in content.splitlines():
+        if obsolete_payment_reference(line):
+            lines.append(f'Internacionales: Binance Pay en USDT. Pay ID: {BINANCE_PAY_ID}.')
+        else:
+            lines.append(re.sub(r'\bUSD\b','USDT',line))
+    return '\n'.join(lines)
+
+
+class DiscordAPI:
+    def __init__(self,token):
+        self.session=requests.Session()
+        self.session.headers['Authorization']='Bot '+token
+
+    def request(self,method,path,**kwargs):
+        for attempt in range(6):
+            response=self.session.request(method,'https://discord.com/api/v10'+path,timeout=25,**kwargs)
+            if response.status_code==429:
+                time.sleep(min(float(response.json().get('retry_after',2)),10))
+                continue
+            if response.status_code>=500 and attempt<5:
+                time.sleep(2)
+                continue
+            if not response.ok:
+                raise RuntimeError(f'Discord {response.status_code} en {path}')
+            return response.json()
+        raise RuntimeError('Discord no permitió completar la solicitud tras varios intentos')
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--apply',action='store_true')
+    parser.add_argument('--guild',default='1423388693082935420')
+    args=parser.parse_args()
+    api=DiscordAPI(dotenv_values(ROOT/'.env')['DISCORD_TOKEN'])
+    identity=api.request('GET','/users/@me')
+    if identity['id']!='1444824969480769718':
+        raise RuntimeError('La credencial no corresponde al asistente esperado')
+    channels=api.request('GET',f'/guilds/{args.guild}/channels')
+    selected=[c for c in channels if c['type'] in (0,5) and (
+        re.search(r'^(ticket-|sug-)|compr|rang|informaci[oó]n|sugeren|promo|venta',c['name'],re.I)
+        or c['id']=='1503937966748205056')]
+    directory=ROOT.parent/'.local'/'operations'/('payment-policy-'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+    directory.mkdir(parents=True,exist_ok=False)
+    own,manual,errors,truncated=[],[],[],[]
+    scanned=0
+    for channel in selected:
+        before=None
+        for page in range(10):
+            params={'limit':100}
+            if before:
+                params['before']=before
+            try:
+                messages=api.request('GET',f"/channels/{channel['id']}/messages",params=params)
+            except RuntimeError as exc:
+                errors.append({'channel_id':channel['id'],'error':str(exc)})
+                break
+            scanned+=len(messages)
+            for message in messages:
+                body=message.get('content','')+json.dumps(message.get('embeds',[]),ensure_ascii=False)
+                if not obsolete_payment_reference(body):
+                    continue
+                record={'channel_id':channel['id'],'message':message,
+                        'url':f"https://discord.com/channels/{args.guild}/{channel['id']}/{message['id']}"}
+                if message['author']['id']==identity['id']:
+                    record['replacement']=replacement(message,channel['name'].startswith('sug-') or channel.get('parent_id')=='1510095191275737088')
+                    own.append(record)
+                elif message['author']['id']=='704501115110162542':
+                    record['replacement_content']=owner_replacement(message.get('content',''))
+                    manual.append(record)
+            if len(messages)<100:
+                break
+            before=messages[-1]['id']
+            if page==9:
+                truncated.append(channel['id'])
+    # La copia de recuperación nunca se guarda en Git ni se envía a otra plataforma.
+    (directory/'before.json').write_text(json.dumps({'bot':own,'owner':manual},ensure_ascii=False,indent=2),encoding='utf-8')
+    results=[]
+    if args.apply:
+        for record in own:
+            path=f"/channels/{record['channel_id']}/messages/{record['message']['id']}"
+            current=api.request('GET',path)
+            if current.get('content')!=record['message'].get('content') or current.get('embeds')!=record['message'].get('embeds'):
+                raise RuntimeError('El mensaje cambió desde la inspección; no se sobrescribe')
+            payload=record['replacement']
+            if obsolete_payment_reference(json.dumps(payload,ensure_ascii=False)):
+                raise RuntimeError('La sustitución todavía contiene instrucciones antiguas')
+            api.request('PATCH',path,json={**payload,'allowed_mentions':{'parse':[]}})
+            after=api.request('GET',path)
+            if obsolete_payment_reference(after.get('content','')+json.dumps(after.get('embeds',[]))):
+                raise RuntimeError('No se pudo verificar la actualización del mensaje')
+            results.append(record['url'])
+    report={'apply':args.apply,'channels':len(selected),'messages_scanned':scanned,'bot_candidates':len(own),
+            'edited':results,'owner_messages':[{'url':r['url'],'replacement_content':r['replacement_content']} for r in manual],
+            'errors':errors,'truncated_channels':truncated,'backup':str(directory/'before.json')}
+    (directory/'result.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
+    print(json.dumps(report,ensure_ascii=True),flush=True)
+    return 1 if errors or truncated else 0
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

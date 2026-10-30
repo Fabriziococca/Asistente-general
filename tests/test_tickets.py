@@ -77,7 +77,7 @@ def attachment(data=b'photo', mime='image/png', filename='pago.png'):
 
 
 def delivery():
-    return dict(entrega_estado='preparado', entrega_id='test', roles_asignados=['Diamante', 'Oro', 'Plata'], user_id=123)
+    return dict(entrega_estado='preparado', entrega_id='test', roles_asignados=['Diamante', 'Oro', 'Plata'], user_id=123,moneda='ARS',metodo_pago='transferencia')
 
 
 class TicketTests(unittest.IsolatedAsyncioTestCase):
@@ -113,7 +113,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
     async def test_known_receipt_uses_no_ai_and_no_new_payment(self):
         cog, _, msg = fixture()
         msg.attachments = [attachment()]
-        cog.payments.known.return_value = dict(user_id=123, ticket_id=456)
+        cog.payments.known.return_value = dict(user_id=123,ticket_id=456,moneda='ARS',metodo_pago='transferencia')
         cog._generate_content_with_rotation = AsyncMock()
         await cog.handle_receipt_image(msg)
         cog._generate_content_with_rotation.assert_not_awaited()
@@ -123,7 +123,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog, _, msg = fixture()
         msg.content = 'Diamante'
         msg.attachments = [attachment()]
-        cog.payments.known.return_value = dict(user_id=123,ticket_id=456)
+        cog.payments.known.return_value = dict(user_id=123,ticket_id=456,moneda='ARS',metodo_pago='transferencia')
         cog.payments.completed.return_value = [delivery()]
         msg.author.roles = [NS(id=r['id']) for r in ROLES.values()]
         await cog.handle_receipt_image(msg)
@@ -136,7 +136,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog, _, msg = fixture()
         msg.content = 'Rango diamante'
         msg.attachments = [attachment()]
-        cog.payments.known.return_value = dict(user_id=123,ticket_id=456)
+        cog.payments.known.return_value = dict(user_id=123,ticket_id=456,moneda='ARS',metodo_pago='transferencia')
         cog.payments.completed.return_value = [dict(delivery(),roles_asignados=['Oro'])]
         await cog.handle_receipt_image(msg)
         msg.author.add_roles.assert_not_awaited()
@@ -147,7 +147,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog, _, msg = fixture()
         msg.content = ''
         msg.attachments = [attachment()]
-        cog.payments.known.return_value = dict(user_id=123,ticket_id=456)
+        cog.payments.known.return_value = dict(user_id=123,ticket_id=456,moneda='ARS',metodo_pago='transferencia')
         cog.payments.completed.return_value = [dict(delivery(),roles_asignados=['Oro'])]
         cog.payments.summary.return_value = {'state':'receipt_pending','roles':['Oro'],'pending_roles':['Diamante']}
         await cog.handle_receipt_image(msg)
@@ -166,10 +166,10 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         from decimal import Decimal
         cog, _, msg = fixture()
         cog.payments.prepare.return_value = {
-            'totals':{'USD':Decimal('4.50')}, 'missing':Decimal('4.00'), 'desired':('Diamante','Oro')}
+            'totals':{'USDT':Decimal('4.50')}, 'missing':Decimal('4.00'), 'desired':('Diamante','Oro')}
         await cog._handle_pending_purchase(msg)
         self.assertIn('**Diamante, Oro**',msg.channel.sent[-1])
-        self.assertIn('4.00 USD para completar **Oro**',msg.channel.sent[-1])
+        self.assertIn('4.00 USDT para completar **Oro**',msg.channel.sent[-1])
 
     async def test_invalid_json_notifies_owner_and_preserves_ticket(self):
         cog, conn, msg = fixture()
@@ -269,4 +269,4 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
     def test_prices_remain_consistent(self):
         for name, prices in PRICES.items():
             self.assertEqual(float(prices['ARS']), ROLES[name]['ars'])
-            self.assertEqual(float(prices['USD']), ROLES[name]['usd'])
+            self.assertEqual(float(prices['USDT']), ROLES[name]['usdt'])

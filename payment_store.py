@@ -4,6 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from receipts import PRICES, choose_roles
+from payment_policy import current_payment
 
 
 SCHEMA = """
@@ -59,6 +60,8 @@ class PaymentStore:
 
     async def save(self, message, receipts, digests, suggestion=False):
         """No se asigna acceso antes de guardar. Los reenvíos no agregan ingresos."""
+        if any(not current_payment(receipt.currency, receipt.method) for receipt in receipts):
+            raise ValueError('Medio o moneda fuera de la política de cobro vigente')
         rows = []
         async with self.pool.acquire(timeout=10) as conn:
             async with conn.transaction():
@@ -111,15 +114,21 @@ class PaymentStore:
                 pending = await conn.fetchrow("""SELECT * FROM pagos WHERE ticket_id=$1 AND user_id=$2
                     AND entrega_estado IN ('preparado','reintentar','manual') ORDER BY pago_id LIMIT 1""", ticket_id, user_id)
                 if pending:
+                    if not current_payment(pending['moneda'], pending['metodo_pago'], legacy_bank=True):
+                        return {'blocked': True}
                     return {"delivery": dict(pending)}
                 rows = await conn.fetch("""SELECT * FROM pagos WHERE ticket_id=$1 AND user_id=$2
                     AND entrega_estado='pendiente' ORDER BY pago_id FOR UPDATE""", ticket_id, user_id)
+                eligible = [row for row in rows if current_payment(row['moneda'], row['metodo_pago'], legacy_bank=True)]
+                if rows and not eligible:
+                    return {'blocked': True}
+                rows = eligible
                 if not rows:
                     return {"empty": True}
                 totals = {}
                 for row in rows:
                     totals[row['moneda']] = totals.get(row['moneda'], Decimal(0)) + row['monto']
-                # Nunca se suman ARS y USD entre sí.
+                # Nunca se suman pesos y cripto entre sí ni se utiliza saldo de medios retirados.
                 for currency, amount in totals.items():
                     roles, missing = choose_roles(amount, currency, desired)
                     if not roles:
@@ -189,5 +198,7 @@ class PaymentStore:
                 JOIN tickets t ON t.channel_id=p.ticket_id
                 WHERE p.entrega_estado IN ('preparado','reintentar') AND p.entrega_intentos < 3
                 AND p.entrega_actualizada < CURRENT_TIMESTAMP - INTERVAL '2 minutes'
+                AND ((p.moneda='ARS' AND (p.metodo_pago IS NULL OR p.metodo_pago IN ('transferencia','mercadopago','uala','otro')))
+                    OR (p.moneda='USDT' AND p.metodo_pago='binance'))
                 AND t.estado IS DISTINCT FROM 'pausado'
                 ORDER BY p.entrega_id, p.pago_id LIMIT 25""")

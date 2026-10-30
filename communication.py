@@ -6,23 +6,19 @@ import re
 import discord
 
 from receipts import normalize
+from payment_policy import (PAYMENT_DETAILS, PAYMENT_METHODS, PRICE_LIST,
+                            payment_context, safe_payment_response, obsolete_payment_reference)
 
 
-PAYMENT_DETAILS = ("Titular: **Fabrizio Giovanni Cocca Ducay**.\n"
-                   "Alias: `LENGUA.LUJOSA.TELAR`\nCBU: `3840200500000026286680`\n"
-                   "PayPal: `sesarjavier28@gmail.com` (USD).")
-PRICE_LIST = ("💎 Diamante: **$4.700 ARS / USD 4,50**\n"
-              "🥇 Oro: **$4.200 ARS / USD 4**\n🥈 Plata: **$2.200 ARS / USD 2**\n"
-              "Los tres: **$11.100 ARS / USD 10,50**.\n"
-              "Son permanentes y cada rango tiene su propio contenido; Diamante no incluye Oro ni Plata.")
+PAYMENT_QUERY = r'\b(alias|cbu|cvu|titular|datos de pago|como (pago|pagar)|binance|usdt|usd|dolares|metodos? de pago|tarjeta|cripto|\w*pay\w*)\b'
 
 
 def local_answer(content, *, suggestion=False, purchase=None):
     text = re.sub(r'<@!?\d+>', '', normalize(content)).strip(' ¡!¿?.\n')
     if suggestion:
-        if re.search(r'\b(pagar|pago|precio|cuanto|alias|cbu|paypal)\b', text):
-            return ("La petición cuesta **$4.000 ARS / USD 4**. Primero mandá la plataforma de contenido "
-                    "y su red social; esperá la confirmación de disponibilidad de administración antes de pagar.")
+        if obsolete_payment_reference(content) or re.search(PAYMENT_QUERY, text) or re.search(r'\b(pagar|pago|precio|cuanto)\b', text):
+            return ("La petición cuesta **$4.000 ARS / 4 USDT**. Primero mandá la plataforma de contenido "
+                    "y su red social; esperá la confirmación de disponibilidad de administración antes de pagar. " + PAYMENT_METHODS)
         if re.fullmatch(r'(hola|buenas|buen dia|buenas tardes|buenas noches)( bot)?', text):
             return "¡Hola! Mandame la plataforma de contenido y la red social de la modelo que querés pedir. Administración revisará si está disponible."
         return None
@@ -40,8 +36,8 @@ def local_answer(content, *, suggestion=False, purchase=None):
         if (purchase or {}).get('has_attachment'):
             return "Veo que ya mandaste un archivo, pero todavía no tengo una validación confirmada. Voy a pedir que revisen el caso; no vuelvas a pagar."
         return "Para revisar tu compra necesito la foto o PDF del comprobante acá y qué rangos querés. El bot no está conectado al banco; no hace falta pagar otra vez."
-    if re.search(r'\b(alias|cbu|cvu|titular|datos de pago|como (pago|pagar)|paypal)\b', text):
-        return PAYMENT_DETAILS + "\nDespués mandá el comprobante y los rangos que elegiste."
+    if obsolete_payment_reference(content) or re.search(PAYMENT_QUERY, text):
+        return PAYMENT_METHODS + '\n\n' + PAYMENT_DETAILS + "\nDespués mandá el comprobante y los rangos que elegiste."
     if re.search(r'\b(precio|precios|cuanto|cuestan|cuesta|valor|valen)\b', text):
         return PRICE_LIST
     if re.search(r'\b(incluye|incluyen|diferencia|diferencias|desbloquea|desbloquean)\b', text):
@@ -66,7 +62,7 @@ def local_answer(content, *, suggestion=False, purchase=None):
 
 
 def message_chunks(text, limit=1900):
-    text = re.sub(r'\[GRANT_ROLE:[^\]]*\]', '', str(text)).strip()
+    text = safe_payment_response(re.sub(r'\[GRANT_ROLE:[^\]]*\]', '', str(text)).strip())
     if not text:
         text = 'Decime qué necesitás revisar y te ayudo.'
     chunks = []
@@ -108,4 +104,4 @@ def author_label(message, owner_id):
 
 def history_line(message, owner_id):
     attachment_note = ' [adjuntó archivo]' if message.attachments else ''
-    return f"{author_label(message, owner_id)}: {message.content[:1600]}{attachment_note}"
+    return f"{author_label(message, owner_id)}: {payment_context(message.content[:1600])}{attachment_note}"

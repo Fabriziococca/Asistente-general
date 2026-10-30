@@ -9,7 +9,7 @@ from receipts import attachment_mime, choose_roles, money, parse_receipts, reque
 def reading(index=0, amount=4700, **changes):
     result = dict(archivo_indice=index, es_comprobante=True, monto=amount, moneda='ARS',
                   destinatario='Fabrizio Giovanni Cocca Ducay', cuenta_destino=None,
-                  pago_completado=None, numero_operacion='E1792432861708X', metodo_pago='otro')
+                  pago_completado=None, numero_operacion='E1792432861708X', metodo_pago='transferencia')
     result.update(changes)
     return result
 
@@ -62,10 +62,10 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(choose_roles(Decimal(5000), 'ARS', ('Diamante',))[0], ('Diamante',))
         self.assertFalse(choose_roles(Decimal(5000), 'ARS')[0])
 
-    def test_paypal_usd(self):
-        receipts, issues = parse(reading(monto='4.50', moneda='USD', destinatario='sesarjavier28@gmail.com', metodo_pago='paypal'))
+    def test_binance_usd(self):
+        receipts, issues = parse(reading(monto='4.50', moneda='USDT', destinatario='fabrococca',pay_id_destino='552346130', metodo_pago='binance'))
         self.assertFalse(issues)
-        self.assertEqual(choose_roles(receipts[0].amount, 'USD')[0], ('Diamante',))
+        self.assertEqual(choose_roles(receipts[0].amount, 'USDT')[0], ('Diamante',))
 
     def test_missing_reading_does_not_discard_readable_receipt(self):
         receipts, issues = parse(reading(), count=2)

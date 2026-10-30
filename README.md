@@ -4,10 +4,10 @@ Bot de Python/discord.py para atender tickets de Ticket Tool, leer comprobantes 
 
 ## Comprobantes y entrega
 
-- Lee todas las imágenes/PDF de cada mensaje. Acepta diferencias de diseño, recortes, banco receptor y ausencia de fecha o número de operación; Wilobank es válido. Requiere un importe legible en ARS/USD y coincidencia del titular o cuenta de destino.
+- Lee todas las imágenes/PDF de cada mensaje. Acepta diferencias de diseño, recortes, banco receptor y ausencia de fecha o número de operación; Wilobank es válido. Requiere un importe legible en ARS/USDT y coincidencia del titular o cuenta de destino.
 - Gemini extrae datos. Python comprueba precios, combinaciones y saldo con Decimal. Las órdenes textuales del modelo no entregan roles.
-- Registra los comprobantes antes de asignar acceso. Acumula pagos del mismo comprador y ticket, también en mensajes separados; no mezcla ARS y USD.
-- Conserva todos los rangos pendientes desde antes de llamar a Gemini. Si se pidieron Diamante y Oro, escribir solamente “Oro” junto al segundo comprobante no cancela Diamante. USD 4,50 + USD 4 completan ambos; si falta registrar parte del pago, identifica el pedido y los rangos que faltan cubrir. El combo se entrega cuando alcanza el total.
+- Registra los comprobantes antes de asignar acceso. Acumula pagos del mismo comprador y ticket, también en mensajes separados; no mezcla ARS y USDT.
+- Conserva todos los rangos pendientes desde antes de llamar a Gemini. Si se pidieron Diamante y Oro, escribir solamente “Oro” junto al segundo comprobante no cancela Diamante. 4,50 USDT + 4 USDT completan ambos; si falta registrar parte del pago, identifica el pedido y los rangos que faltan cubrir. El combo se entrega cuando alcanza el total.
 - Detecta reenvíos por huella del archivo y por operación/importe/moneda, cuando hay operación. La protección empieza con esta versión: los pagos históricos no contienen huellas.
 - Un comprobante repetido también revisa el acceso en Discord. Si falta un rango que ya tiene una entrega registrada, recupera esa entrega sin sumar ingresos. Si el pedido no coincide con los rangos registrados, conserva el ticket y pide revisión, en lugar de confirmar que está resuelto. No reconstruye automáticamente las compras antiguas que quedaron mal clasificadas.
 - Prepara la entrega en Neon, asigna roles, consulta Discord para verificar todos los rangos y recién entonces informa éxito.
@@ -34,7 +34,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-El bot necesita intents de miembros y contenido de mensajes, permiso para administrar roles y un rol superior a todos los rangos vendidos. Identificadores y precios: `cogs/tickets.py`; tarifas de cálculo: `receipts.py`, contrastadas con tests.
+El bot necesita intents de miembros y contenido de mensajes, permiso para administrar roles y un rol superior a todos los rangos vendidos. Identificadores de roles: `cogs/tickets.py`. Destinos públicos y precios: `payment_policy.py`, compartidos por mensajes y cálculo y contrastados con tests.
 
 El inicio aplica `payment_store.SCHEMA`: columnas e índices adicionales, sin borrar pagos ni reconstruir datos históricos. En un rollback se conservan las columnas; una versión anterior no respeta las protecciones ni entregas nuevas.
 
@@ -67,3 +67,13 @@ El supervisor recrea el cliente después de fallos transitorios, cierra el pool 
 `/` y `/readyz` devuelven 200 solo con conexión Discord, base comprobada, tickets cargados y comandos sincronizados; en caso contrario devuelven 503. `/healthz` comprueba la actividad del proceso/event loop. La base se comprueba cada cinco minutos, sin consultas por cada health check HTTP. Los endpoints exponen únicamente estados, sin credenciales ni conversaciones.
 
 Render Free puede suspender servicios por inactividad o al consumir sus horas incluidas; Gemini gratuito también tiene cuotas y disponibilidad variable. Estas mejoras recuperan trabajo al volver a estar disponible el servicio y reducen silencios; no ofrecen disponibilidad continua garantizada. No se agregan servicios pagos ni mecanismos artificiales para impedir la suspensión. Referencias: https://render.com/docs/free y https://ai.google.dev/gemini-api/docs/rate-limits.
+
+## Medios de cobro vigentes
+
+Solo transferencia en pesos argentinos a CBU/CVU y USDT por Binance Pay. El Pay ID confirmado por el propietario es `552346130`; alias local `LENGUA.LUJOSA.TELAR`, CBU/CVU `3840200500000026286680`.
+
+Precios internacionales sin descuento: Diamante 4,50 USDT, Oro 4 USDT, Plata 2 USDT y petición 4 USDT. No se aceptan conversiones de USD ni de otras criptomonedas. El destinatario se valida por ID cuando aparece, sin depender de que el apodo público permanezca igual.
+
+La política se controla al extraer, guardar, preparar y entregar. Un método anterior no vuelve a habilitarse por un mensaje repetido ni por la recuperación de pendientes. El contexto y las respuestas automáticas omiten instrucciones de cobro obsoletas.
+
+Los pagos históricos se conservan con su moneda y método originales. `/finanzas` muestra importes registrados brutos, separa ARS, USDT y USD históricos y no aplica descuentos, conversiones ni comisiones supuestas. No se modifica retroactivamente el historial ni se revocan rangos comprados antes del cambio.

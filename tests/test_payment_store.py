@@ -64,8 +64,8 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def save_two(self):
         return await self.store.save(self.message,
-            [Receipt(0, Decimal(4700), 'ARS', 'otro', 'first-operation'),
-             Receipt(1, Decimal(6400), 'ARS', 'otro', 'second-operation')], ['hash-first','hash-second'])
+            [Receipt(0, Decimal(4700), 'ARS', 'transferencia', 'first-operation'),
+             Receipt(1, Decimal(6400), 'ARS', 'transferencia', 'second-operation')], ['hash-first','hash-second'])
 
     async def test_two_receipts_one_complete_delivery_and_exact_finances(self):
         await self.save_two()
@@ -113,37 +113,51 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.save_two()
         await self.save_two()
         await self.store.save(self.message,
-            [Receipt(0,Decimal(4700),'ARS','otro','first-operation')], ['different-image'])
+            [Receipt(0,Decimal(4700),'ARS','transferencia','first-operation')], ['different-image'])
         self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE comprobante_hash IS NOT NULL"),2)
 
+    async def test_retired_method_is_blocked_before_any_insert(self):
+        with self.assertRaises(ValueError):
+            await self.store.save(self.message,[Receipt(0,Decimal('4.50'),'USD','paypal',None)],['retired'])
+        self.assertEqual(await self.conn.fetchval('SELECT count(*) FROM pagos'),1)
+
+    async def test_retired_pending_balance_does_not_fund_new_purchase_or_recover(self):
+        await self.conn.execute("""INSERT INTO pagos (user_id,ticket_id,monto,moneda,metodo_pago,
+            entrega_estado,entrega_id,entrega_actualizada)
+            VALUES (-123,-456,4.50,'USD','paypal','pendiente',NULL,CURRENT_TIMESTAMP-INTERVAL '3 minutes')""")
+        self.assertTrue((await self.store.prepare(-456,-123,('Diamante',)))['blocked'])
+        await self.conn.execute("UPDATE pagos SET entrega_estado='reintentar',entrega_id='legacy' WHERE moneda='USD'")
+        self.assertFalse(await self.store.recoverable())
+        self.assertEqual(await self.conn.fetchval("SELECT monto FROM pagos WHERE moneda='USD'"),Decimal('4.50'))
+
     async def test_partial_then_second_message_and_restart(self):
-        await self.store.save(self.message,[Receipt(0,Decimal(4700),'ARS','otro',None)],['first'])
+        await self.store.save(self.message,[Receipt(0,Decimal(4700),'ARS','transferencia',None)],['first'])
         partial = await self.store.prepare(-456,-123,('Diamante','Oro','Plata'))
         self.assertEqual(partial['missing'],6400)
         restarted = PaymentStore(BoundConnection(self.conn))
-        await restarted.save(self.message,[Receipt(0,Decimal(6400),'ARS','otro',None)],['second'])
+        await restarted.save(self.message,[Receipt(0,Decimal(6400),'ARS','transferencia',None)],['second'])
         self.assertEqual((await restarted.prepare(-456,-123))['delivery']['roles_asignados'],['Diamante','Oro','Plata'])
 
-    async def test_paypal_followup_oro_keeps_original_diamante_and_oro(self):
+    async def test_binance_followup_oro_keeps_original_diamante_and_oro(self):
         await self.store.save(self.message,
-            [Receipt(0,Decimal('4.50'),'USD','paypal','diamond-payment')], ['diamond-pdf'])
+            [Receipt(0,Decimal('4.50'),'USDT','binance','diamond-payment')], ['diamond-pdf'])
         first = await self.store.prepare(-456,-123,('Diamante','Oro'))
         self.assertEqual(first['missing'],Decimal('4.00'))
         restarted = PaymentStore(BoundConnection(self.conn))
         await restarted.save(self.message,
-            [Receipt(0,Decimal('4.00'),'USD','paypal','gold-payment')], ['gold-pdf'])
+            [Receipt(0,Decimal('4.00'),'USDT','binance','gold-payment')], ['gold-pdf'])
         delivery = (await restarted.prepare(-456,-123,('Oro',)))['delivery']
         self.assertEqual(delivery['roles_asignados'],['Diamante','Oro'])
         await restarted.finish(delivery['entrega_id'],-456)
         self.assertTrue(all(row['roles_asignados']==['Diamante','Oro'] for row in
-            await self.conn.fetch("SELECT roles_asignados FROM pagos WHERE moneda='USD'")))
+            await self.conn.fetch("SELECT roles_asignados FROM pagos WHERE moneda='USDT'")))
 
     async def test_finishing_one_delivery_keeps_other_requested_roles_and_payments(self):
         await self.store.save(self.message,
-            [Receipt(0,Decimal('4.50'),'USD','paypal',None)], ['diamond-pdf'])
+            [Receipt(0,Decimal('4.50'),'USDT','binance',None)], ['diamond-pdf'])
         first = (await self.store.prepare(-456,-123,('Diamante',)))['delivery']
         await self.store.save(self.message,
-            [Receipt(0,Decimal('4.00'),'USD','paypal',None)], ['gold-pdf'])
+            [Receipt(0,Decimal('4.00'),'USDT','binance',None)], ['gold-pdf'])
         await self.store.prepare(-456,-123,('Oro',))
         await self.store.finish(first['entrega_id'],-456)
         ticket = await self.conn.fetchrow("SELECT * FROM tickets WHERE channel_id=-456")
@@ -168,7 +182,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         message.author.add_roles = AsyncMock(side_effect=assign)
         return cog, message
 
-    async def test_paypal_two_distinct_pdfs_one_message_delivers_both_roles(self):
+    async def test_binance_two_distinct_pdfs_one_message_delivers_both_roles(self):
         from unittest.mock import AsyncMock
         from test_tickets import attachment
         from test_receipts import reading
@@ -177,12 +191,12 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         message.attachments = [attachment(b'diamond','application/pdf','pago.pdf'),
                                attachment(b'gold','application/pdf','pago.pdf')]
         cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes':[
-            reading(monto='4.50',moneda='USD',metodo_pago='paypal',numero_operacion='diamond-paypal'),
-            reading(1,monto='4.00',moneda='USD',metodo_pago='paypal',numero_operacion='gold-paypal')]}))
+            reading(monto='4.50',moneda='USDT',metodo_pago='binance',pay_id_destino='552346130',numero_operacion='diamond-binance'),
+            reading(1,monto='4.00',moneda='USDT',metodo_pago='binance',pay_id_destino='552346130',numero_operacion='gold-binance')]}))
         await cog.on_message(message)
         self.assertEqual(len(cog._generate_content_with_rotation.await_args.args[1]),2)
         self.assertEqual(len(message.author.add_roles.await_args.args),2)
-        rows = await self.conn.fetch("SELECT * FROM pagos WHERE moneda='USD'")
+        rows = await self.conn.fetch("SELECT * FROM pagos WHERE moneda='USDT'")
         self.assertEqual(len(rows),2)
         self.assertEqual(sum(r['monto'] for r in rows),Decimal('8.50'))
         self.assertTrue(all(r['roles_asignados']==['Diamante','Oro'] and r['entrega_estado']=='entregado' for r in rows))
@@ -197,7 +211,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         # Incluso si el primer mensaje repite el mismo PDF, el pedido no se pierde.
         message.attachments = [attachment(b'diamond','application/pdf'),attachment(b'diamond','application/pdf')]
         cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes':[
-            reading(monto='4.50',moneda='USD',metodo_pago='paypal',numero_operacion='diamond-paypal')]}))
+            reading(monto='4.50',moneda='USDT',metodo_pago='binance',pay_id_destino='552346130',numero_operacion='diamond-binance')]}))
         await cog.on_message(message)
         message.author.add_roles.assert_not_awaited()
         self.assertIn('completar **Oro**',message.channel.sent[-1])
@@ -205,7 +219,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         message.content = 'Oro'
         message.attachments = [attachment(b'gold','application/pdf')]
         cog._generate_content_with_rotation.return_value = json.dumps({'comprobantes':[
-            reading(monto='4.00',moneda='USD',metodo_pago='paypal',numero_operacion='gold-paypal')]})
+            reading(monto='4.00',moneda='USDT',metodo_pago='binance',pay_id_destino='552346130',numero_operacion='gold-binance')]})
         await cog.on_message(message)
         self.assertEqual({r.id for r in message.author.roles},{ROLES['Diamante']['id'],ROLES['Oro']['id']})
         message.id += 1
@@ -219,15 +233,15 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({r.id for r in message.author.roles},{ROLES['Diamante']['id'],ROLES['Oro']['id']})
         self.assertEqual(message.author.add_roles.await_count,2)
         self.assertEqual(cog._generate_content_with_rotation.await_count,2)
-        rows = await self.conn.fetch("SELECT * FROM pagos WHERE moneda='USD'")
+        rows = await self.conn.fetch("SELECT * FROM pagos WHERE moneda='USDT'")
         self.assertEqual(len(rows),2)
         self.assertEqual(sum(r['monto'] for r in rows),Decimal('8.50'))
         self.assertTrue(all(r['roles_asignados']==['Diamante','Oro'] and r['entrega_estado']=='entregado' for r in rows))
 
     async def test_legacy_incomplete_delivery_requests_review_instead_of_duplicate_success(self):
         from test_tickets import attachment
-        await self.store.save(self.message,[Receipt(0,Decimal('4.50'),'USD','paypal',None),
-            Receipt(1,Decimal('4.00'),'USD','paypal',None)],['diamond-hash','gold-hash'])
+        await self.store.save(self.message,[Receipt(0,Decimal('4.50'),'USDT','binance',None),
+            Receipt(1,Decimal('4.00'),'USDT','binance',None)],['diamond-hash','gold-hash'])
         delivery = (await self.store.prepare(-456,-123,('Oro',)))['delivery']
         await self.store.finish(delivery['entrega_id'],-456)
         cog,message = self.purchase_bot()
@@ -240,7 +254,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any('conciliar **Diamante**' in (s or '') for s in message.channel.sent))
         self.assertTrue(await self.conn.fetchval("SELECT conservar FROM tickets WHERE channel_id=-456"))
         self.assertEqual((await self.store.summary(-456,-123))['state'],'receipt_pending')
-        self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE moneda='USD'"),2)
+        self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE moneda='USDT'"),2)
         message.author.add_roles.assert_not_awaited()
 
     async def test_failed_first_read_keeps_combo_before_second_payment(self):
@@ -257,11 +271,11 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         message.content='Oro'
         message.attachments=[attachment(b'gold','application/pdf')]
         cog._generate_content_with_rotation.return_value=json.dumps({'comprobantes':[
-            reading(monto='4.00',moneda='USD',numero_operacion='gold-payment')]})
+            reading(monto='4.00',moneda='USDT',metodo_pago='binance',pay_id_destino='552346130',numero_operacion='gold-payment')]})
         await cog.on_message(message)
         message.author.add_roles.assert_not_awaited()
         self.assertEqual(await self.conn.fetchval("SELECT rangos_solicitados FROM tickets WHERE channel_id=-456"),['Diamante','Oro'])
-        self.assertIn('4.50 USD para completar **Diamante**',message.channel.sent[-1])
+        self.assertIn('4.50 USDT para completar **Diamante**',message.channel.sent[-1])
 
     async def test_recovery_is_persistent_and_bounded(self):
         await self.save_two()
@@ -288,7 +302,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_currencies_are_not_added_together(self):
         await self.store.save(self.message,
-            [Receipt(0,Decimal(2200),'ARS','otro',None), Receipt(1,Decimal(2),'USD','paypal',None)], ['ars','usd'])
+            [Receipt(0,Decimal(2200),'ARS','transferencia',None), Receipt(1,Decimal(2),'USDT','binance',None)], ['ars','usd'])
         result=await self.store.prepare(-456,-123,('Diamante',))
         self.assertNotIn('delivery',result)
 

@@ -8,13 +8,8 @@ import json
 import re
 import unicodedata
 
-
-PRICES = {
-    "Diamante": {"ARS": Decimal("4700"), "USD": Decimal("4.5")},
-    "Oro": {"ARS": Decimal("4200"), "USD": Decimal("4")},
-    "Plata": {"ARS": Decimal("2200"), "USD": Decimal("2")},
-}
-
+from payment_policy import (PRICES, BANK_ACCOUNT, BINANCE_PAY_ID,
+                            BINANCE_RECIPIENT_ALIASES, current_payment)
 
 def normalize(text):
     return "".join(c for c in unicodedata.normalize("NFKD", str(text)).lower()
@@ -104,26 +99,29 @@ def parse_receipts(text, count):
         if item.get("pago_completado") is False:
             issues.append(f"archivo {index + 1}: aparece pendiente o sin ejecutar")
             continue
+        currency = str(item.get("moneda", "")).upper()
+        method = str(item.get("metodo_pago", "")).lower()
+        if not current_payment(currency, method):
+            issues.append(f"archivo {index + 1}: medio o moneda no admitidos; solo transferencia ARS o Binance Pay en USDT")
+            continue
         # La marca bancaria y el número de operación NO son requisitos.
         recipient = normalize(item.get("destinatario", ""))
         account = re.sub(r"\D", "", str(item.get("cuenta_destino", "")))
-        recipient_ok = ("fabrizio" in recipient and "cocca" in recipient) or \
-            "sesarjavier28@gmail.com" in recipient or account == "3840200500000026286680"
+        if method == 'binance':
+            pay_id = re.sub(r'\D', '', str(item.get('pay_id_destino') or '')) or account
+            recipient_ok = pay_id == BINANCE_PAY_ID if pay_id else (
+                any(normalize(alias) == recipient.strip() for alias in BINANCE_RECIPIENT_ALIASES) or
+                ('fabrizio' in recipient and 'cocca' in recipient))
+        else:
+            recipient_ok = ("fabrizio" in recipient and "cocca" in recipient) or account == BANK_ACCOUNT
         if not recipient_ok:
             issues.append(f"archivo {index + 1}: falta confirmar el destinatario")
-            continue
-        currency = str(item.get("moneda", "")).upper()
-        if currency not in ("ARS", "USD"):
-            issues.append(f"archivo {index + 1}: falta el importe en ARS o USD")
             continue
         try:
             amount = money(item.get("monto"))
         except ValueError:
             issues.append(f"archivo {index + 1}: no se pudo leer el importe")
             continue
-        method = str(item.get("metodo_pago", "otro")).lower()
-        if method not in {"paypal", "binance", "uala", "mercadopago", "otro"}:
-            method = "otro"
         operation = item.get("numero_operacion")
         accepted.append(Receipt(index, amount, currency, method,
                                 operation if isinstance(operation, str) else None))
@@ -134,6 +132,8 @@ def parse_receipts(text, count):
 
 def choose_roles(amount, currency, desired=()):
     """Los precios y la entrega se deciden en Python, nunca mediante órdenes del LLM."""
+    if currency not in ('ARS', 'USDT'):
+        return (), None
     if desired:
         price = sum((PRICES[r][currency] for r in desired), Decimal(0))
         return (tuple(desired), Decimal(0)) if amount >= price else ((), price - amount)
@@ -156,13 +156,19 @@ Distinguí el emisor (De) del destinatario (Para). Copiá el titular y CBU/CVU d
 Si dice explícitamente pendiente, fallido o sin ejecutar, pago_completado=false.
 Si parece un comprobante final pero falta esa frase, pago_completado=null; no inventes.
 Usá monto numérico: 6.400,00 significa 6400. No sumes archivos ni repitas un pago.
-Para PayPal en moneda extranjera, extraé el equivalente USD si aparece; no inventes conversión.
+Los únicos medios admitidos son transferencia bancaria/billetera en ARS y Binance Pay en USDT.
+metodo_pago debe ser "transferencia" para transferencias ARS, "binance" para Binance Pay,
+o "no_admitido" para cualquier otro medio. No reclasifiques una plataforma externa como transferencia.
+En Binance Pay copiá la cantidad y el activo realmente enviados: USDT. USD es una cotización,
+no el activo USDT; no conviertas otras criptomonedas ni aceptes solo una valoración en dólares.
+Copiá el Pay ID/UID del DESTINATARIO en pay_id_destino si aparece. No confundas con el del emisor.
 El destinatario esperado es Fabrizio Giovanni Cocca Ducay / Fabrizio Cocca,
-CBU 3840200500000026286680, o sesarjavier28@gmail.com en PayPal.
+CBU/CVU {BANK_ACCOUNT}, o Binance Pay ID {BINANCE_PAY_ID}.
+El apodo puede cambiar: si el ID del destinatario coincide, no rechaces por el nombre.
 No marques como inválido porque la entidad receptora sea Wilobank en vez de Ualá.
 Respondé únicamente JSON:
 {{"comprobantes":[{{"archivo_indice":0,"es_comprobante":true,
 "monto":6400,"moneda":"ARS","destinatario":"texto visible",
-"cuenta_destino":"texto visible o null","pago_completado":null,
-"numero_operacion":"texto visible o null","metodo_pago":"otro"}}]}}
+"cuenta_destino":"texto visible o null","pay_id_destino":null,"pago_completado":null,
+"numero_operacion":"texto visible o null","metodo_pago":"transferencia"}}]}}
 """

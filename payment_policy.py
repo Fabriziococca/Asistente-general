@@ -49,19 +49,17 @@ NORMAL_PRICE_LIST = ('💎 Diamante: **$5.900 ARS / 4,50 USDT**\n'
               'Los tres: **$13.500 ARS / 10,50 USDT**.\n'
               'Son permanentes y cada rango tiene su propio contenido; Diamante no incluye Oro ni Plata.')
 _local_end = CAMPAIGN_END.astimezone(timezone(timedelta(hours=-3)))
-CAMPAIGN_COPY = ('⚡ **MEGADESCUENTO ESPECIAL · SOLO POR 7 DÍAS**\n'
-                 f'Promo relámpago hasta el {_local_end:%d/%m/%Y a las %H:%M} (hora argentina), exclusivamente pagando por PayPal en USD.\n'
-                 'Disponible para usuarios del exterior y de Argentina con saldo en PayPal.')
-PAYMENT_METHODS = (CAMPAIGN_COPY + '\nAceptamos **PayPal en USD** con precio promocional '
-                   'o **transferencia en pesos argentinos a CBU/CVU** a precio habitual.')
+CAMPAIGN_COPY = ('⚡ **PROMO PAYPAL · 7 DÍAS**\n'
+                 f'Hasta el {_local_end:%d/%m a las %H:%M} (hora argentina). También desde Argentina con saldo PayPal.')
+PAYMENT_METHODS = (CAMPAIGN_COPY + '\n**Transferencia ARS a CBU/CVU** o **PayPal en USD**.')
 PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
-                   f'\n\n**PayPal · USD · promo por 7 días**\nEnviá el monto exacto a `{PAYPAL_EMAIL}`.')
-PRICE_LIST = (CAMPAIGN_COPY + '\n'
-              '💎 Diamante: **$2,00 USD por PayPal** (antes $4,50 USD; más de 55% OFF) / **$5.900 ARS**\n'
-              '🥇 Oro: **$1,75 USD por PayPal** (antes $4,00 USD) / **$5.300 ARS**\n'
-              '🥈 Plata: **$1,50 USD por PayPal** (antes $2,00 USD) / **$2.300 ARS**\n'
-              '🔥 Los tres: **$5,25 USD por PayPal · 50% OFF** (antes $10,50 USD) / **$13.500 ARS**.\n'
-              'Son permanentes y cada rango tiene su propio contenido; Diamante no incluye Oro ni Plata.')
+                   f'\n\n**PayPal · USD (monto exacto)**\nCorreo: `{PAYPAL_EMAIL}`')
+PRICE_LIST = ('💎 Diamante: **$5.900 ARS / $2,00 USD**\n'
+              '🥇 Oro: **$5.300 ARS / $1,75 USD**\n'
+              '🥈 Plata: **$2.300 ARS / $1,50 USD**\n'
+              '🔥 Los tres: **$13.500 ARS / $5,25 USD** (50% OFF en USD).\n\n'
+              + CAMPAIGN_COPY + '\n'
+              'Rangos permanentes, cada uno con su contenido. Diamante no incluye Oro ni Plata.')
 
 
 def payment_copy():

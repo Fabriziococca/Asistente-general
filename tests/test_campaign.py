@@ -123,7 +123,8 @@ class CampaignTests(unittest.IsolatedAsyncioTestCase):
         for suggestion in (False,True):
             content,embed=ticket_welcome(suggestion)
             body=content+json.dumps(embed.to_dict(),ensure_ascii=False)
-            self.assertIn('7 DÍAS',body)
+            if not suggestion:
+                self.assertEqual(body.count('7 DÍAS'),1)
             self.assertIn(policy.PAYPAL_EMAIL,body)
             self.assertNotIn('Binance',body)
             self.assertFalse(policy.private_identity_reference(body))

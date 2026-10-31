@@ -17,15 +17,19 @@ sys.path.insert(0,str(ROOT))
 import requests
 from dotenv import dotenv_values
 
-from payment_policy import (PAYMENT_DETAILS, PAYMENT_METHODS, BINANCE_PAY_ID, BANK_HOLDER,
+from payment_policy import (payment_copy, announcement_text, BANK_HOLDER, PAYPAL_EMAIL, campaign_active,
                             BINANCE_RECIPIENT_ALIASES, obsolete_payment_reference,
                             private_identity_reference, public_message_needs_refresh)
-from ticket_messages import ticket_welcome
+from ticket_messages import ticket_welcome, welcome_needs_refresh
 
 
 def redacted(text):
-    text=re.sub(r'\bpay[\W_]*pal\b','medio anterior (retirado)',str(text),flags=re.I)
-    text=re.sub(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}','[dato de cobro retirado]',text,flags=re.I)
+    retired = r'\bbinance(?:\s+pay)?\b|552346130' if campaign_active() else r'\bpay[\W_]*pal\b'
+    text=re.sub(retired,'medio anterior (retirado)',str(text),flags=re.I)
+    text=re.sub(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}',
+        lambda match: match[0] if campaign_active() and match[0].casefold()==PAYPAL_EMAIL
+        else '[dato de cobro retirado]',text,flags=re.I)
+    text=re.sub(r'@(everyone|here)\b','',text,flags=re.I)
     if private_identity_reference(text):
         names=[BANK_HOLDER, BANK_HOLDER.split()[0]+' '+BANK_HOLDER.split()[-2],
                *BANK_HOLDER.split(), *BINANCE_RECIPIENT_ALIASES]
@@ -36,6 +40,7 @@ def redacted(text):
 
 
 def replacement(message,suggestion=False):
+    methods, details, prices, _ = payment_copy()
     embeds=message.get('embeds',[])
     if any('Zona de Compras' in (e.get('title') or '') or 'Petición Única' in (e.get('title') or '') for e in embeds):
         content,embed=ticket_welcome(suggestion)
@@ -43,9 +48,9 @@ def replacement(message,suggestion=False):
     content=message.get('content','')
     if obsolete_payment_reference(content):
         if re.search(r'\b(registr\w*|entreg\w*|comprobante)\b',content,re.I):
-            content=redacted(content)+'\n\n'+PAYMENT_METHODS
+            content=redacted(content)+'\n\n'+methods
         else:
-            content=PAYMENT_METHODS+'\n\n'+PAYMENT_DETAILS
+            content=methods+'\n\n'+details
     elif private_identity_reference(content):
         content=redacted(content)
     updated=[]
@@ -57,13 +62,13 @@ def replacement(message,suggestion=False):
         fields=[]
         for field in embed.get('fields',[]):
             if public_message_needs_refresh(field.get('name','')+' '+field.get('value','')):
-                fields.append({'name':'Medios de cobro vigentes','value':PAYMENT_DETAILS,'inline':False})
+                fields.append({'name':'Medios de cobro vigentes','value':details,'inline':False})
             else:
                 fields.append(field)
         if fields:
             embed['fields']=fields
         if public_message_needs_refresh(embed.get('footer',{}).get('text','')):
-            embed['footer']={'text':'Información de cobro actualizada: transferencia ARS y Binance Pay en USDT.'}
+            embed['footer']={'text':'Información de cobro actualizada. Consultá los medios y precios vigentes en el ticket.'}
         for key in ('url','image','thumbnail','author'):
             if public_message_needs_refresh(json.dumps(embed.get(key,''))):
                 embed.pop(key,None)
@@ -78,22 +83,39 @@ def needs_refresh(message, suggestion=False):
         return True
     if any('Zona de Compras' in (e.get('title') or '') or 'Petición Única' in (e.get('title') or '')
            for e in message.get('embeds',[])):
-        expected = replacement(message,suggestion)
-        keys = ('title','description','color','fields','footer')
-        actual = [{k:e[k] for k in keys if k in e} for e in message.get('embeds',[])]
-        wanted = [{k:e[k] for k in keys if k in e} for e in expected['embeds']]
-        return message.get('content','') != expected['content'] or actual != wanted
+        return welcome_needs_refresh(message.get('content',''), message.get('embeds',[]), suggestion)
     return False
 
 
 def owner_replacement(content):
-    lines=[]
-    for line in content.splitlines():
-        if obsolete_payment_reference(line):
-            lines.append(f'Internacionales: Binance Pay en USDT. Pay ID: {BINANCE_PAY_ID}.')
-        else:
-            lines.append(redacted(re.sub(r'\bUSD\b','USDT',line)))
-    return '\n'.join(lines)
+    # Solo propuesta para copiar manualmente; el bot no edita mensajes ajenos.
+    if 'ADQUIRIR RANGOS' in content or re.search(r'Rango\s+<@&\d+>',content,re.I):
+        tail = re.search(r'[^\n]*(?:DEMOSTRACIÓN|DEMOSTRACION|GUÍAS|GUIAS)[\s\S]*',content)
+        return announcement_text() + ('\n\n' + redacted(tail[0]) if tail else '')
+    retired = r'\bbinance(?:\s+pay)?(?:\s*\(?USDT\)?)?\b' if campaign_active() else r'\bpay[\W_]*pal\b'
+    current = 'PayPal en USD (promo de rangos por 7 días; consultá el ticket)' if campaign_active() else 'Binance Pay en USDT'
+    return redacted(re.sub(retired,current,content,flags=re.I))
+
+
+def validate_replacement(payload):
+    if public_message_needs_refresh(json.dumps(payload,ensure_ascii=False)):
+        raise ValueError('La sustitución contiene un medio retirado o datos privados')
+    if len(payload.get('content','')) > 2000:
+        raise ValueError('La sustitución supera el límite de contenido de Discord')
+    total=0
+    for embed in payload.get('embeds',[]):
+        for key,limit in (('title',256),('description',4096)):
+            value=embed.get(key,'')
+            if len(value)>limit:
+                raise ValueError('La sustitución supera un límite de embed')
+            total+=len(value)
+        for field in embed.get('fields',[]):
+            if len(field.get('name',''))>256 or len(field.get('value',''))>1024:
+                raise ValueError('La sustitución supera un límite de campo')
+            total+=len(field.get('name',''))+len(field.get('value',''))
+        total+=len(embed.get('footer',{}).get('text',''))+len(embed.get('author',{}).get('name',''))
+    if total>6000 or re.search(r'@(everyone|here)\b',json.dumps(payload),re.I):
+        raise ValueError('La sustitución supera límites o contiene menciones generales')
 
 
 class DiscordAPI:
@@ -152,6 +174,7 @@ def main():
                 if not needs_refresh(message,suggestion):
                     continue
                 record={'channel_id':channel['id'],'message':message,
+                        'suggestion':suggestion,
                         'url':f"https://discord.com/channels/{args.guild}/{channel['id']}/{message['id']}"}
                 if message['author']['id']==identity['id']:
                     record['replacement']=replacement(message,channel['name'].startswith('sug-') or channel.get('parent_id')=='1510095191275737088')
@@ -166,16 +189,19 @@ def main():
                 truncated.append(channel['id'])
     # La copia de recuperación nunca se guarda en Git ni se envía a otra plataforma.
     (directory/'before.json').write_text(json.dumps({'bot':own,'owner':manual},ensure_ascii=False,indent=2),encoding='utf-8')
+    for record in own:
+        validate_replacement(record['replacement'])
     results=[]
     if args.apply:
         for record in own:
             path=f"/channels/{record['channel_id']}/messages/{record['message']['id']}"
             current=api.request('GET',path)
             if current.get('content')!=record['message'].get('content') or current.get('embeds')!=record['message'].get('embeds'):
+                if not needs_refresh(current,record.get('suggestion',False)):
+                    continue
                 raise RuntimeError('El mensaje cambió desde la inspección; no se sobrescribe')
             payload=record['replacement']
-            if public_message_needs_refresh(json.dumps(payload,ensure_ascii=False)):
-                raise RuntimeError('La sustitución todavía contiene datos que deben omitirse')
+            validate_replacement(payload)
             api.request('PATCH',path,json={**payload,'allowed_mentions':{'parse':[]}})
             after=api.request('GET',path)
             if public_message_needs_refresh(after.get('content','')+json.dumps(after.get('embeds',[]))):

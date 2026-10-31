@@ -165,6 +165,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_welcome_is_not_repeated_for_manual_or_known_ticket(self):
         cog,conn,message=fixture()
         message.channel.overwrites={}
+        cog._refresh_known_welcome=AsyncMock()
         for row in ({'bienvenida_id':111,'estado':'abierto'}, {'bienvenida_id':None,'estado':'pausado'}):
             conn.row=row
             await cog._procesar_bienvenida_y_registro(message.channel)
@@ -190,3 +191,14 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'OK')
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'OK')
         self.assertEqual([call.args[0] for call in create.call_args_list],['first','second','second'])
+
+
+from campaign_clock import freeze_campaign
+
+def setUpModule():
+    global _campaign_clock
+    _campaign_clock = freeze_campaign()
+    _campaign_clock.start()
+
+def tearDownModule():
+    _campaign_clock.stop()

@@ -35,7 +35,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
 
     async def save(self, message, amount=5900, currency='ARS', digest='one'):
         return await self.store.save(message,[Receipt(0,Decimal(amount),currency,
-            'transferencia' if currency=='ARS' else 'binance',digest+'-operation')],[digest])
+            'transferencia' if currency=='ARS' else 'paypal',digest+'-operation')],[digest])
 
     async def stale(self):
         await self.conn.execute("UPDATE pagos SET entrega_actualizada=CURRENT_TIMESTAMP-INTERVAL '4 minutes'")
@@ -80,17 +80,17 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_mixed_currency_purchase_delivers_both_ranks_without_conversion(self):
         cog,message,_=self.bot()
         message.content='Diamante y Oro'
-        message.attachments=[attachment(b'ars'),attachment(b'usdt')]
+        message.attachments=[attachment(b'ars'),attachment(b'usd')]
         cog._generate_content_with_rotation=AsyncMock(return_value=json.dumps({'comprobantes':[
             reading(monto='5.900',metodo_pago='Mercado Pago'),
-            reading(1,monto='4',moneda='USDT',metodo_pago='binance',pay_id_destino='552346130')]}))
+            reading(1,monto='1.75',moneda='USD',metodo_pago='paypal')]}))
         await cog.on_message(message)
         expected={ROLES[name]['id'] for name in ('Diamante','Oro')}
         self.assertTrue(expected.issubset({role.id for role in message.author.roles}))
         self.assertEqual((await self.store.summary(-456,-123))['state'],'delivered')
         rows=await self.conn.fetch("SELECT moneda,monto,roles_asignados FROM pagos WHERE comprobante_hash IS NOT NULL ORDER BY pago_id")
         self.assertEqual([(r['moneda'],r['monto'],r['roles_asignados']) for r in rows],
-                         [('ARS',Decimal(5900),['Diamante']),('USDT',Decimal(4),['Oro'])])
+                         [('ARS',Decimal(5900),['Diamante']),('USD',Decimal('1.75'),['Oro'])])
         await cog.on_message(message)
         self.assertEqual(message.author.add_roles.await_count,2)
 
@@ -231,3 +231,14 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.conn.fetchval("SELECT sum(monto) FROM pagos WHERE comprobante_hash IS NOT NULL"),11200)
         self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE comprobante_hash IS NOT NULL"),2)
         message.author.add_roles.assert_awaited_once()
+
+
+from campaign_clock import freeze_campaign
+
+def setUpModule():
+    global _campaign_clock
+    _campaign_clock = freeze_campaign()
+    _campaign_clock.start()
+
+def tearDownModule():
+    _campaign_clock.stop()

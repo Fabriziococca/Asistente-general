@@ -62,10 +62,10 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(choose_roles(Decimal(6000), 'ARS', ('Diamante',))[0], ('Diamante',))
         self.assertFalse(choose_roles(Decimal(6000), 'ARS')[0])
 
-    def test_binance_usd(self):
-        receipts, issues = parse(reading(monto='4.50', moneda='USDT', destinatario='fabrococca',pay_id_destino='552346130', metodo_pago='binance'))
+    def test_paypal_usd(self):
+        receipts, issues = parse(reading(monto='2.00', moneda='USD', destinatario='fabrococca', metodo_pago='paypal'))
         self.assertFalse(issues)
-        self.assertEqual(choose_roles(receipts[0].amount, 'USDT')[0], ('Diamante',))
+        self.assertEqual(choose_roles(receipts[0].amount, 'USD')[0], ('Diamante',))
 
     def test_missing_reading_does_not_discard_readable_receipt(self):
         receipts, issues = parse(reading(), count=2)
@@ -119,3 +119,14 @@ class ReceiptTests(unittest.TestCase):
     def test_mime_fallback_handles_missing_type(self):
         self.assertEqual(attachment_mime(SimpleNamespace(content_type=None, filename='pago.PNG')), 'image/png')
         self.assertIsNone(attachment_mime(SimpleNamespace(content_type=None, filename='archivo.txt')))
+
+
+from campaign_clock import freeze_campaign
+
+def setUpModule():
+    global _campaign_clock
+    _campaign_clock = freeze_campaign()
+    _campaign_clock.start()
+
+def tearDownModule():
+    _campaign_clock.stop()

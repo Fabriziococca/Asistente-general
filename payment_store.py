@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from receipts import PRICES, choose_roles, split_purchase
-from payment_policy import current_payment
+from payment_policy import current_payment, recorded_payment, CAMPAIGN_ID
 
 
 SCHEMA = """
@@ -19,6 +19,7 @@ ALTER TABLE pagos ADD COLUMN IF NOT EXISTS entrega_estado TEXT;
 ALTER TABLE pagos ADD COLUMN IF NOT EXISTS entrega_intentos INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE pagos ADD COLUMN IF NOT EXISTS entrega_actualizada TIMESTAMPTZ;
 ALTER TABLE pagos ADD COLUMN IF NOT EXISTS aviso_pendiente BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE pagos ADD COLUMN IF NOT EXISTS politica_precio TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS pagos_comprobante_hash_unique
     ON pagos (comprobante_hash) WHERE comprobante_hash IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS pagos_operacion_key_unique
@@ -71,13 +72,14 @@ class PaymentStore:
                 for receipt in receipts:
                     row = await conn.fetchrow("""
                         INSERT INTO pagos (user_id, ticket_id, monto, moneda, concepto, metodo_pago,
-                            comprobante_hash, operacion_key, guild_id, entrega_estado, entrega_actualizada, aviso_pendiente)
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP,$11)
+                            comprobante_hash, operacion_key, guild_id, entrega_estado, entrega_actualizada, aviso_pendiente, politica_precio)
+                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,CURRENT_TIMESTAMP,$11,$12)
                         ON CONFLICT DO NOTHING RETURNING *
                     """, message.author.id, message.channel.id, receipt.amount, receipt.currency,
                         "Sugerencia" if suggestion else "Pendiente de rango", receipt.method,
                         digests[receipt.index], receipt.operation_key, message.guild.id,
-                        "entregado" if suggestion else "pendiente", not suggestion)
+                        "entregado" if suggestion else "pendiente", not suggestion,
+                        CAMPAIGN_ID if receipt.currency == 'USD' else None)
                     if not row:
                         row = await conn.fetchrow("""SELECT * FROM pagos
                             WHERE comprobante_hash = $1 OR (operacion_key IS NOT NULL AND operacion_key = $2)
@@ -115,12 +117,12 @@ class PaymentStore:
                 pending = await conn.fetchrow("""SELECT * FROM pagos WHERE ticket_id=$1 AND user_id=$2
                     AND entrega_estado IN ('preparado','reintentar','manual') ORDER BY pago_id LIMIT 1""", ticket_id, user_id)
                 if pending:
-                    if not current_payment(pending['moneda'], pending['metodo_pago'], legacy_bank=True):
+                    if not recorded_payment(pending):
                         return {'blocked': True}
                     return {"delivery": dict(pending)}
                 rows = await conn.fetch("""SELECT * FROM pagos WHERE ticket_id=$1 AND user_id=$2
                     AND entrega_estado='pendiente' ORDER BY pago_id FOR UPDATE""", ticket_id, user_id)
-                eligible = [row for row in rows if current_payment(row['moneda'], row['metodo_pago'], legacy_bank=True)]
+                eligible = [row for row in rows if recorded_payment(row)]
                 if rows and not eligible:
                     return {'blocked': True}
                 rows = eligible
@@ -231,8 +233,9 @@ class PaymentStore:
                 AND COALESCE(p.entrega_actualizada,p.fecha_pago) < CURRENT_TIMESTAMP - INTERVAL '2 minutes'
                 AND t.estado IS DISTINCT FROM 'pausado'
                 AND ((p.moneda='ARS' AND (p.metodo_pago IS NULL OR p.metodo_pago IN ('transferencia','mercadopago','uala','otro')))
-                    OR (p.moneda='USDT' AND p.metodo_pago='binance'))
-                ORDER BY p.ticket_id,p.user_id,p.guild_id LIMIT 25""")
+                    OR (p.moneda='USDT' AND p.metodo_pago='binance')
+                    OR (p.moneda='USD' AND p.metodo_pago='paypal' AND p.politica_precio=$1))
+                ORDER BY p.ticket_id,p.user_id,p.guild_id LIMIT 25""", CAMPAIGN_ID)
 
     async def recoverable(self):
         async with self.pool.acquire(timeout=10) as conn:
@@ -242,6 +245,7 @@ class PaymentStore:
                     AND COALESCE(p.entrega_actualizada,p.fecha_pago) < CURRENT_TIMESTAMP - INTERVAL '2 minutes')
                     OR (p.entrega_estado IN ('entregado','manual') AND p.aviso_pendiente))
                 AND ((p.moneda='ARS' AND (p.metodo_pago IS NULL OR p.metodo_pago IN ('transferencia','mercadopago','uala','otro')))
-                    OR (p.moneda='USDT' AND p.metodo_pago='binance'))
+                    OR (p.moneda='USDT' AND p.metodo_pago='binance')
+                    OR (p.moneda='USD' AND p.metodo_pago='paypal' AND p.politica_precio=$1))
                 AND t.estado IS DISTINCT FROM 'pausado'
-                ORDER BY p.entrega_id, p.pago_id LIMIT 25""")
+                ORDER BY p.entrega_id, p.pago_id LIMIT 25""", CAMPAIGN_ID)

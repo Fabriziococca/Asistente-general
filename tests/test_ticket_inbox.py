@@ -259,3 +259,14 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await cog.on_message(message)
         message.reply.assert_not_awaited()
         self.assertEqual(await self.inbox.counts(),0)
+
+
+from campaign_clock import freeze_campaign
+
+def setUpModule():
+    global _campaign_clock
+    _campaign_clock = freeze_campaign()
+    _campaign_clock.start()
+
+def tearDownModule():
+    _campaign_clock.stop()

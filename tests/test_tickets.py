@@ -42,7 +42,7 @@ def pool_for(conn):
 
 def fixture():
     conn = Connection()
-    bot = NS(pool=pool_for(conn), user=NS(mentioned_in=lambda m: False))
+    bot = NS(pool=pool_for(conn), user=NS(id=1444824969480769718, mentioned_in=lambda m: False))
     cog = Tickets(bot)
     cog.payments = NS(known=AsyncMock(return_value=None), save=AsyncMock(return_value=[]),
                       remember=AsyncMock(),
@@ -186,10 +186,10 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         from decimal import Decimal
         cog, _, msg = fixture()
         cog.payments.prepare.return_value = {
-            'totals':{'USDT':Decimal('4.50')}, 'missing':Decimal('4.00'), 'desired':('Diamante','Oro')}
+            'totals':{'USD':Decimal('2.00')}, 'missing':Decimal('1.75'), 'desired':('Diamante','Oro')}
         await cog._handle_pending_purchase(msg)
         self.assertIn('**Diamante, Oro**',msg.channel.sent[-1])
-        self.assertIn('4.00 USDT para completar **Oro**',msg.channel.sent[-1])
+        self.assertIn('1.75 USD para completar **Oro**',msg.channel.sent[-1])
 
     async def test_invalid_json_notifies_owner_and_preserves_ticket(self):
         cog, conn, msg = fixture()
@@ -292,3 +292,14 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         for name, prices in PRICES.items():
             self.assertEqual(float(prices['ARS']), ROLES[name]['ars'])
             self.assertEqual(float(prices['USDT']), ROLES[name]['usdt'])
+
+
+from campaign_clock import freeze_campaign
+
+def setUpModule():
+    global _campaign_clock
+    _campaign_clock = freeze_campaign()
+    _campaign_clock.start()
+
+def tearDownModule():
+    _campaign_clock.stop()

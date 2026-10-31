@@ -4,10 +4,10 @@ Bot de Python/discord.py para atender tickets de Ticket Tool, leer comprobantes 
 
 ## Comprobantes y entrega
 
-- Lee todas las imágenes/PDF de cada mensaje. Acepta diferencias de diseño, recortes, banco receptor y ausencia de fecha o número de operación; Wilobank es válido. Requiere un importe legible en ARS/USDT y coincidencia del titular o cuenta de destino.
+- Lee todas las imágenes/PDF de cada mensaje. Acepta diferencias de diseño, recortes, banco receptor y ausencia de fecha o número de operación; Wilobank es válido. Requiere un importe legible en una moneda habilitada y coincidencia del titular o cuenta de destino.
 - Gemini extrae datos. Python comprueba precios, combinaciones y saldo con Decimal. Las órdenes textuales del modelo no entregan roles.
-- Registra los comprobantes antes de asignar acceso. Acumula pagos del mismo comprador y ticket, también en mensajes separados; no mezcla ARS y USDT.
-- Conserva todos los rangos pendientes desde antes de llamar a Gemini. Si se pidieron Diamante y Oro, escribir solamente “Oro” junto al segundo comprobante no cancela Diamante. 4,50 USDT + 4 USDT completan ambos; si falta registrar parte del pago, identifica el pedido y los rangos que faltan cubrir. El combo se entrega cuando alcanza el total.
+- Registra los comprobantes antes de asignar acceso. Acumula pagos del mismo comprador y ticket, también en mensajes separados; no suma monedas distintas entre sí.
+- Conserva todos los rangos pendientes desde antes de llamar a Gemini. Si se pidieron Diamante y Oro, escribir solamente “Oro” junto al segundo comprobante no cancela Diamante. Durante la campaña, 2 USD + 1,75 USD completan ambos; si falta registrar parte del pago, identifica el pedido y los rangos que faltan cubrir. El combo se entrega cuando alcanza el total.
 - Detecta reenvíos por huella del archivo y por operación/importe/moneda, cuando hay operación. La protección empieza con esta versión: los pagos históricos no contienen huellas.
 - Un comprobante repetido también revisa el acceso en Discord. Si falta un rango que ya tiene una entrega registrada, recupera esa entrega sin sumar ingresos. Si el pedido no coincide con los rangos registrados, conserva el ticket y pide revisión, en lugar de confirmar que está resuelto. No reconstruye automáticamente las compras antiguas que quedaron mal clasificadas.
 - Prepara la entrega en Neon, asigna roles, consulta Discord para verificar todos los rangos y recién entonces informa éxito.
@@ -60,7 +60,7 @@ La recuperación comienza con el despliegue de esta versión; no reproduce conve
 
 El modo manual se respeta durante la recuperación. Las consultas demoradas tienen un aviso de recepción y, si falla Google, una respuesta útil y derivación a administración. Los modelos con errores quedan temporalmente en espera para no agotar cuota repitiendo llamadas. El presupuesto incluye la espera por la IA: 35 segundos para texto y 90 para comprobantes.
 
-El aviso semanal conserva su fecha en Neon; reiniciar o reconectar ya no dispara otro @everyone. La primera ejecución de esta versión inicia ese calendario sin emitir un broadcast.
+Durante la campaña temporal se suspenden los avisos semanales. No se emiten anuncios masivos ni menciones generales; las respuestas del modelo también eliminan esas menciones.
 
 ## Recuperación entre pago, acceso y confirmación
 
@@ -68,9 +68,9 @@ La recuperación comprueba también pagos guardados sin entrega preparada y entr
 
 `pagos.aviso_pendiente` conserva las confirmaciones y derivaciones a administración que todavía no pudieron enviarse. El aviso se recupera sin volver a cobrar ni asignar roles. Los pagos pendientes sin rango definido reciben una sola consulta; no se repite cada cinco minutos. Esta marca se activa en operaciones nuevas y no reanuncia el historial previo al despliegue. Un aviso sin confirmar protege el ticket frente al borrado automático.
 
-Una respuesta de IA que omite un archivo o no logra leer sus datos se reintenta conservando los comprobantes ya registrados. Los archivos que ya constan en Neon no vuelven a enviarse a la IA. Si desaparece el original de Discord, queda para revisión humana, nunca como lectura completada. Los importes ARS escritos con miles (`4.700`) se interpretan como 4700; las cantidades USDT conservan su interpretación decimal. Mercado Pago y Ualá se reconocen como transferencias ARS.
+Una respuesta de IA que omite un archivo o no logra leer sus datos se reintenta conservando los comprobantes ya registrados. Los archivos que ya constan en Neon no vuelven a enviarse a la IA. Si desaparece el original de Discord, queda para revisión humana, nunca como lectura completada. Los importes ARS escritos con miles (`4.700`) se interpretan como 4700; los importes USD y USDT conservan su interpretación decimal. Mercado Pago y Ualá se reconocen como transferencias ARS.
 
-Un pedido de varios rangos puede pagarse con distintas monedas: cada rango debe quedar cubierto íntegramente por su precio ARS o USDT. No se convierten monedas ni se suman para cubrir un mismo rango. Si la combinación no alcanza o es ambigua, se conservan los importes y se pide revisión sin indicar un faltante inventado.
+Un pedido de varios rangos puede pagarse con distintas monedas: cada rango debe quedar cubierto íntegramente por su precio en la moneda registrada. No se convierten monedas ni se suman para cubrir un mismo rango. Si la combinación no alcanza o es ambigua, se conservan los importes y se pide revisión sin indicar un faltante inventado.
 
 Ante un reclamo de acceso de una compra con entrega registrada, el bot consulta Discord y recupera únicamente los roles documentados si faltan. Las consultas breves de un cliente que espera reciben el estado real sin reiniciar la venta ni depender de Gemini. La reparación no reconstruye compras históricas sin una entrega identificada ni modifica permisos generales del servidor.
 
@@ -86,16 +86,16 @@ Render Free puede suspender servicios por inactividad o al consumir sus horas in
 
 Diamante $5.900 ARS, Oro $5.300 ARS y Plata $2.300 ARS; los tres $13.500 ARS. Peticiones: $4.000 ARS, solo tras confirmación de administración. Estos precios se mantienen al retirar campañas internacionales temporales.
 
-## Medios de cobro vigentes
+## Campaña temporal internacional: PayPal en USD
 
-Solo transferencia en pesos argentinos a CBU/CVU y USDT por Binance Pay. El Pay ID confirmado por el propietario es `552346130`; alias local `LENGUA.LUJOSA.TELAR`, CBU/CVU `3840200500000026286680`.
+Durante siete días, desde `CAMPAIGN_START` hasta `CAMPAIGN_END` (límite excluido, UTC), solo se ofrecen transferencias ARS y PayPal en USD. El cierre figura con fecha y hora argentina en precios, respuestas y bienvenidas; no se reinicia el plazo al reconectar. Los precios promocionales de rangos son Diamante 2,00 USD, Oro 1,75 USD, Plata 1,50 USD; los tres 5,25 USD. El descuento no aplica a ARS ni a peticiones: estas cuestan 4.000 ARS o 4 USD y requieren confirmación previa de administración.
 
-Precios internacionales sin descuento: Diamante 4,50 USDT, Oro 4 USDT, Plata 2 USDT y petición 4 USDT. No se aceptan conversiones de USD ni de otras criptomonedas. El destinatario se valida por ID cuando aparece, sin depender de que el apodo público permanezca igual.
+El único dato público de cobro PayPal es `sesarjavier28@gmail.com`. Los alias principales y el titular se usan internamente para leer comprobantes. La identidad bancaria solo se confirma ante una consulta explícita sobre transferencias ARS; no se revela al preguntar por PayPal. Si un comprobante muestra moneda local y una equivalencia USD explícita, se usa esa equivalencia; no se calcula una conversión ni se descuentan comisiones.
 
-Si un comprobante Binance/USDT legible solo muestra un apodo nuevo, la política permisiva permite continuar y avisa a administración para auditar el destinatario. Un ID de destino explícitamente diferente no se aprueba. La falta total de destinatario sigue requiriendo revisión.
+Los pagos nuevos de la campaña se marcan con `pagos.politica_precio`. La columna es aditiva y no reescribe el historial. USD de PayPal anterior a la campaña sin esta marca no financia nuevas compras. Las entregas ya registradas en USDT mantienen compatibilidad defensiva, pero durante la campaña no se aceptan comprobantes nuevos de ese medio. La deduplicación, acumulación de pagos y verificación de todos los rangos permanecen activas.
 
-La política se controla al extraer, guardar, preparar y entregar. Un método anterior no vuelve a habilitarse por un mensaje repetido ni por la recuperación de pendientes. El contexto y las respuestas automáticas omiten instrucciones de cobro obsoletas.
+Al vencer, las respuestas y los pagos nuevos vuelven automáticamente al modo normal: precios ARS definitivos y Binance Pay (Diamante 4,50 USDT, Oro 4 USDT, Plata 2 USDT; petición 4 USDT). Las bienvenidas propias identificadas en tickets abiertos se actualizan en el barrido periódico, sin enviar otro mensaje. Los pagos PayPal registrados con la marca de campaña todavía pueden terminar su entrega o recuperar un aviso después del cierre. Un comprobante nuevo de un medio ya cerrado requiere revisión humana, sin pedir otro pago.
 
-El titular bancario permanece en el contexto interno para leer comprobantes y responder consultas explícitas sobre el titular. No se publica en bienvenidas, datos generales de pago ni respuestas espontáneas. El historial que recibe la IA omite el nombre y el apodo anterior, y una guardia de salida impide que el modelo los vuelva a ofrecer sin consulta. Los identificadores necesarios para cobrar (alias, CBU/CVU y Pay ID) siguen visibles. Esto controla los mensajes del asistente, no las pantallas de las plataformas de pago ni mensajes ajenos.
+La campaña ocupa un único commit posterior al aumento definitivo de ARS (`c42d17a`). Para retirar también su código cuando el propietario pida modo normal: comprobar primero que no quedan pagos/entregas/avisos USD ni lecturas de comprobantes sin resolver; completar o derivar esos casos, revertir solo el commit temporal, probar, publicar y ejecutar `scripts/refresh_payment_messages.py --apply --all-channels`. No borrar columnas ni pagos. La reversión restaura los precios normales USDT y conserva 5.900/5.300/2.300 ARS. El anuncio escrito por el propietario se entrega como propuesta para copiar manualmente; el script no edita mensajes ajenos.
 
-Los pagos históricos se conservan con su moneda y método originales. `/finanzas` muestra importes registrados brutos, separa ARS, USDT y USD históricos y no aplica descuentos, conversiones ni comisiones supuestas. No se modifica retroactivamente el historial ni se revocan rangos comprados antes del cambio.
+Los pagos históricos conservan su moneda, importe y método originales. `/finanzas` separa cada moneda y presenta importes brutos, sin conversiones, comisiones estimadas ni afirmaciones sobre acreditación bancaria. Los servicios gratuitos y el pool de modelos no cambian.

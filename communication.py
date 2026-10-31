@@ -6,22 +6,23 @@ import re
 import discord
 
 from receipts import normalize, requested_roles
-from payment_policy import (PAYMENT_DETAILS, PAYMENT_METHODS, PRICE_LIST,
-                            BANK_HOLDER, bank_holder_query, payment_context,
-                            safe_payment_response, obsolete_payment_reference)
+from payment_policy import (BANK_HOLDER, bank_holder_query, payment_context,
+                            safe_payment_response, obsolete_payment_reference, payment_copy)
 
 
 PAYMENT_QUERY = r'\b(alias|cbu|cvu|titular|datos de pago|como (pago|pagar)|binance|usdt|usd|dolares|metodos? de pago|tarjeta|cripto|\w*pay\w*)\b'
 
 
 def local_answer(content, *, suggestion=False, purchase=None):
+    methods, details, prices, suggestion_prices = payment_copy()
     text = re.sub(r'<@!?\d+>', '', normalize(content)).strip(' ¡!¿?.\n')
     if bank_holder_query(content):
         return f'El titular de la cuenta para transferencias en pesos es **{BANK_HOLDER}**.'
     if suggestion:
-        if obsolete_payment_reference(content) or re.search(PAYMENT_QUERY, text) or re.search(r'\b(pagar|pago|precio|cuanto)\b', text):
-            return ("La petición cuesta **$4.000 ARS / 4 USDT**. Primero mandá la plataforma de contenido "
-                    "y su red social; esperá la confirmación de disponibilidad de administración antes de pagar. " + PAYMENT_METHODS)
+        if obsolete_payment_reference(content) or re.search(PAYMENT_QUERY, text) or re.search(r'\b(pagar|pago|precios?|cuanto|cuesta|cuestan|valor)\b', text):
+            return (f"La petición cuesta **{suggestion_prices}**. Primero mandá la plataforma de contenido "
+                    "y su red social; esperá la confirmación de disponibilidad de administración antes de pagar. "
+                    "El megadescuento de rangos no aplica a peticiones. " + methods)
         if re.fullmatch(r'(hola|buenas|buen dia|buenas tardes|buenas noches)( bot)?', text):
             return "¡Hola! Mandame la plataforma de contenido y la red social de la modelo que querés pedir. Administración revisará si está disponible."
         return None
@@ -56,12 +57,14 @@ def local_answer(content, *, suggestion=False, purchase=None):
             return "Veo que ya mandaste un archivo, pero todavía no tengo una validación confirmada. Voy a pedir que revisen el caso; no vuelvas a pagar."
         return "Para revisar tu compra necesito la foto o PDF del comprobante acá y qué rangos querés. El bot no está conectado al banco; no hace falta pagar otra vez."
     if obsolete_payment_reference(content) or re.search(PAYMENT_QUERY, text):
-        return PAYMENT_METHODS + '\n\n' + PAYMENT_DETAILS + "\nDespués mandá el comprobante y los rangos que elegiste."
+        if re.search(r'\b(precio|precios|cuanto|cuestan|cuesta|valor|valen)\b', text):
+            return prices + '\n\n' + details
+        return methods + '\n\n' + details + "\nDespués mandá el comprobante y los rangos que elegiste."
     if re.search(r'\b(precio|precios|cuanto|cuestan|cuesta|valor|valen)\b', text):
-        return PRICE_LIST
+        return prices
     if re.search(r'\b(incluye|incluyen|diferencia|diferencias|desbloquea|desbloquean)\b', text):
         return ("Cada rango da acceso a su propio catálogo. **Diamante no incluye Oro ni Plata**; para ver todo necesitás los tres. "
-                "Oro y Diamante habilitan los canales extra; Plata no.\n" + PRICE_LIST)
+                "Oro y Diamante habilitan los canales extra; Plata no.\n" + prices)
     if re.search(r'\b(dura|duran|duracion|vence|vencen|renovar|mensual|permanente|permanentes)\b', text):
         return "Los rangos son **permanentes**, sin renovación mensual. Cada uno habilita únicamente su propio contenido."
     if re.search(r'\b(no (encuentro|veo)|no puedo ver|no aparece|no me aparece)\b', text):
@@ -81,6 +84,7 @@ def local_answer(content, *, suggestion=False, purchase=None):
 
 
 def message_chunks(text, limit=1900, *, query=''):
+    text = re.sub(r'@(everyone|here)\b','',str(text),flags=re.I)
     text = safe_payment_response(re.sub(r'\[GRANT_ROLE:[^\]]*\]', '', str(text)).strip(),
                                  allow_bank_holder=bank_holder_query(query))
     if not text:

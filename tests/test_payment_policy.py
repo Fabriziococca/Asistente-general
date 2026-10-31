@@ -2,12 +2,12 @@ import json
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace as NS
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from communication import local_answer, message_chunks, history_line
 from finance import financial_totals
 from payment_policy import (BINANCE_PAY_ID, BANK_HOLDER, BINANCE_RECIPIENT_ALIASES,
-                            PAYMENT_DETAILS, current_payment, private_identity_reference,
+                            PAYMENT_DETAILS, PAYPAL_EMAIL, current_payment, private_identity_reference,
                             bank_holder_query, public_message_needs_refresh)
 from receipts import parse_receipts, choose_roles, vision_prompt
 from test_receipts import reading
@@ -40,8 +40,8 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(private_identity_reference(content + json.dumps(embed.to_dict())))
 
     def test_holder_is_confirmed_only_after_explicit_request_without_google(self):
-        for question in ('¿Quién es el titular?', 'titular', 'A nombre de quién transfiero',
-                         f'¿El titular es {BANK_HOLDER}?', 'Decime el titular de la cuenta'):
+        for question in ('¿Quién es el titular del CBU?', 'titular de la transferencia', 'A nombre de quién transfiero',
+                         f'¿El titular de la transferencia es {BANK_HOLDER}?', 'Decime el titular de la cuenta bancaria'):
             for suggestion in (False, True):
                 self.assertTrue(bank_holder_query(question))
                 answer = local_answer(question, suggestion=suggestion)
@@ -65,7 +65,7 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
                      '**' + BANK_HOLDER.replace(' ', '** **') + '**', BINANCE_RECIPIENT_ALIASES[0]):
             answer = ''.join(message_chunks('Podés pagar a ' + name, query='Pasame los datos de pago'))
             self.assertFalse(private_identity_reference(answer))
-            self.assertIn(BINANCE_PAY_ID, answer)
+            self.assertIn(PAYPAL_EMAIL, answer)
 
     def test_identity_from_old_history_is_omitted(self):
         for name in (BANK_HOLDER, BINANCE_RECIPIENT_ALIASES[0]):
@@ -74,7 +74,7 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_holder_confirmation_passes_through_discord_response(self):
         cog, _, message = fixture()
-        message.content = '¿Quién es el titular de la cuenta?'
+        message.content = '¿Quién es el titular de la cuenta bancaria?'
         cog._generate_content_with_rotation = AsyncMock()
         await cog.handle_support_query(message)
         cog._generate_content_with_rotation.assert_not_awaited()
@@ -96,7 +96,7 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(public_message_needs_refresh(json.dumps(old)))
         result = replacement(old)
         self.assertFalse(public_message_needs_refresh(json.dumps(result)))
-        self.assertIn(BINANCE_PAY_ID, json.dumps(result))
+        self.assertIn(PAYPAL_EMAIL, json.dumps(result))
 
     def test_existing_personalized_status_keeps_payment_evidence(self):
         from scripts.refresh_payment_messages import replacement
@@ -106,41 +106,45 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(private_identity_reference(result['content']))
 
     def test_only_supported_method_currency_pairs(self):
-        for currency,method in [('USD','paypal'),('ARS','paypal'),('USD','binance'),
+        for currency,method in [('USDT','binance'),('ARS','paypal'),('USD','binance'),
                                 ('BTC','binance'),('USDT','otro'),('ARS','otro')]:
             with self.subTest(currency=currency,method=method):
                 self.assertFalse(current_payment(currency,method))
         self.assertTrue(current_payment('ARS','transferencia'))
-        self.assertTrue(current_payment('USDT','binance'))
+        self.assertTrue(current_payment('USD','paypal'))
         self.assertTrue(current_payment('ARS','mercadopago',legacy_bank=True))
 
     def test_retired_receipt_cannot_pass_even_with_matching_bank_holder(self):
         for currency in ('USD','ARS','USDT'):
             receipts,issues=parse_receipts(json.dumps({'comprobantes':[
-                reading(metodo_pago='paypal',moneda=currency)]}),1)
+                reading(metodo_pago='binance',moneda=currency)]}),1)
             self.assertFalse(receipts)
             self.assertTrue(issues)
 
-    def test_binance_id_allows_changed_nickname(self):
+    @patch('payment_policy.campaign_active', return_value=False)
+    def test_binance_id_allows_changed_nickname(self, _normal):
         receipts,issues=parse_receipts(json.dumps({'comprobantes':[
             reading(monto='4.50',moneda='USDT',metodo_pago='binance',
                     destinatario='UnApodoNuevo',pay_id_destino=BINANCE_PAY_ID)]}),1)
         self.assertFalse(issues)
         self.assertEqual(choose_roles(receipts[0].amount,'USDT')[0],('Diamante',))
 
-    def test_other_binance_recipient_is_not_accepted_by_nickname(self):
+    @patch('payment_policy.campaign_active', return_value=False)
+    def test_other_binance_recipient_is_not_accepted_by_nickname(self, _normal):
         receipts,issues=parse_receipts(json.dumps({'comprobantes':[
             reading(moneda='USDT',metodo_pago='binance',destinatario='fabrococca',pay_id_destino='999999999')]}),1)
         self.assertFalse(receipts)
         self.assertTrue(issues)
 
-    def test_changed_nickname_without_visible_id_is_accepted_with_audit_notice(self):
+    @patch('payment_policy.campaign_active', return_value=False)
+    def test_changed_nickname_without_visible_id_is_accepted_with_audit_notice(self, _normal):
         receipts,issues=parse_receipts(json.dumps({'comprobantes':[
             reading(monto='4.50',moneda='USDT',metodo_pago='binance',destinatario='UnApodoNuevo')]}),1)
         self.assertEqual(len(receipts),1)
         self.assertTrue(any('revisar destinatario' in issue for issue in issues))
 
-    def test_missing_binance_recipient_does_not_look_like_an_anonymous_nickname(self):
+    @patch('payment_policy.campaign_active', return_value=False)
+    def test_missing_binance_recipient_does_not_look_like_an_anonymous_nickname(self, _normal):
         for recipient in (None,'','null','no visible','desconocido'):
             receipts,issues=parse_receipts(json.dumps({'comprobantes':[
                 reading(monto='4.50',moneda='USDT',metodo_pago='binance',destinatario=recipient)]}),1)
@@ -154,26 +158,26 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(choose_roles(Decimal('4.50'),'USD'),((),None))
 
     def test_retired_method_questions_only_return_current_details(self):
-        for question in ('¿Aceptan PayPal?','¿Se puede pagar con PAY PAL?', '¿Pay-pal todavía?'):
+        for question in ('¿Aceptan Binance?','¿Se puede pagar con USDT?', '¿Binance Pay todavía?'):
             for suggestion in (True,False):
                 answer=local_answer(question,suggestion=suggestion)
                 self.assertIsNotNone(answer)
-                self.assertNotIn('paypal',answer.lower())
-                self.assertIn('Binance Pay',answer)
+                self.assertNotIn('binance',answer.lower())
+                self.assertIn('PayPal',answer)
                 self.assertIn('CBU/CVU',answer)
 
     def test_welcome_and_prompt_use_only_confirmed_current_details(self):
         for suggestion in (True,False):
             content,embed=ticket_welcome(suggestion)
             body=content+json.dumps(embed.to_dict(),ensure_ascii=False)
-            self.assertNotIn('paypal',body.lower())
-            self.assertNotIn('@gmail',body.lower())
-            self.assertIn(BINANCE_PAY_ID,body)
-            self.assertIn('USDT',body)
+            self.assertNotIn('binance',body.lower())
+            self.assertIn(PAYPAL_EMAIL,body)
+            self.assertNotIn(BINANCE_PAY_ID,body)
+            self.assertIn('USD',body)
             self.assertTrue(all(len(field.value)<=1024 for field in embed.fields))
         prompt=vision_prompt(2)
-        self.assertIn(BINANCE_PAY_ID,prompt)
-        self.assertNotIn('paypal',prompt.lower())
+        self.assertIn(PAYPAL_EMAIL,prompt)
+        self.assertNotIn('binance',prompt.lower())
 
     def test_old_instructions_do_not_reenter_model_context(self):
         old=NS(author=NS(bot=True,id=1),content='Mandá PayPal al correo viejo@example.org',attachments=[])
@@ -182,11 +186,11 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('viejo@example.org',line)
 
     def test_model_cannot_recommend_retired_method_or_email(self):
-        for text in ('Podés pagar por PayPal','Mandá el pago a viejo@example.org'):
+        for text in ('Podés pagar por Binance Pay','Mandá el pago a viejo@example.org'):
             answer=''.join(message_chunks(text))
-            self.assertNotIn('paypal',answer.lower())
+            self.assertNotIn('binance',answer.lower())
             self.assertNotIn('viejo@example.org',answer)
-            self.assertIn(BINANCE_PAY_ID,answer)
+            self.assertIn(PAYPAL_EMAIL,answer)
 
     def test_finances_keep_historical_amounts_and_usdt_separate(self):
         totals=financial_totals([
@@ -209,10 +213,10 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         await Tickets.ver_finanzas.callback(cog,interaction,mes=10,ano=2026)
         embed=interaction.followup.send.await_args.kwargs['embed']
         body=json.dumps(embed.to_dict(),ensure_ascii=False)
-        self.assertIn('USD históricos',body)
-        self.assertIn('USDT · Binance Pay',body)
+        self.assertIn('USD · PayPal e históricos',body)
+        self.assertIn('USDT registrados',body)
         self.assertIn('9.00 USD',body)
-        self.assertNotIn('paypal',body.lower())
+        self.assertNotIn('binance',body.lower())
 
     async def test_retired_known_receipt_does_not_reuse_ai_or_register_another_payment(self):
         cog,_,message=fixture()
@@ -232,7 +236,8 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         cog.payments.attempt.assert_not_awaited()
         message.author.add_roles.assert_not_awaited()
 
-    async def test_permissive_binance_audit_notice_is_not_a_failed_reading(self):
+    @patch('payment_policy.campaign_active', return_value=False)
+    async def test_permissive_binance_audit_notice_is_not_a_failed_reading(self, _normal):
         cog,conn,message=fixture()
         conn.row={'estado':'abierto','user_id':message.author.id}
         message.attachments=[attachment()]
@@ -251,20 +256,35 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         result=replacement({'content':'Bienvenida','embeds':[{
             'title':'🛒 Zona de Compras','fields':[{'name':'PayPal','value':'viejo@example.org'}]}]})
         body=json.dumps(result,ensure_ascii=False)
-        self.assertNotIn('PayPal',body)
+        self.assertIn('PayPal',body)
         self.assertNotIn('viejo@example.org',body)
-        self.assertIn(BINANCE_PAY_ID,body)
+        self.assertNotIn(BINANCE_PAY_ID,body)
 
     def test_existing_payment_record_message_keeps_amount_and_status(self):
         from scripts.refresh_payment_messages import replacement
         result=replacement({'content':'Comprobante registrado: 4.50 USD por PayPal.','embeds':[]})
         self.assertIn('Comprobante registrado: 4.50 USD',result['content'])
-        self.assertNotIn('PayPal',result['content'])
+        self.assertIn('PayPal',result['content'])
 
-    def test_owner_announcement_keeps_roles_and_navigation(self):
+    def test_owner_announcement_is_a_manual_proposal_with_current_prices(self):
         from scripts.refresh_payment_messages import owner_replacement
-        result=owner_replacement('Rango <@&123>: 4.5 USD\nInternacionales: PayPal y Binance Pay.\nTocá el botón de abajo.')
-        self.assertIn('<@&123>: 4.5 USDT',result)
-        self.assertIn(BINANCE_PAY_ID,result)
+        result=owner_replacement('🛒 ADQUIRIR RANGOS\nAnuncio anterior\n👀 DEMOSTRACIÓN Y GUÍAS\n<#123>\nTocá el botón de abajo.')
+        self.assertIn('5,25 USD',result)
+        self.assertIn('13.500 ARS',result)
+        self.assertIn(PAYPAL_EMAIL,result)
+        self.assertNotIn('Binance',result)
+        self.assertNotIn('@everyone',result)
+        self.assertIn('abrí un ticket',result)
+        self.assertIn('<#123>',result)
         self.assertIn('Tocá el botón de abajo.',result)
-        self.assertNotIn('PayPal',result)
+
+
+from campaign_clock import freeze_campaign
+
+def setUpModule():
+    global _campaign_clock
+    _campaign_clock = freeze_campaign()
+    _campaign_clock.start()
+
+def tearDownModule():
+    _campaign_clock.stop()

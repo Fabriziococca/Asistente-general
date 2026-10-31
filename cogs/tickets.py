@@ -47,6 +47,7 @@ class Tickets(commands.Cog):
         self._cooldowns = {}
         self._alerted = {}
         self._welcome_versions = {}
+        self._closed_tickets = set()
         
         # Pool de 3 modelos funcionales solicitados para rotación
         self.model_pool = [
@@ -190,6 +191,8 @@ class Tickets(commands.Cog):
 
         async with self.bot.pool.acquire(timeout=10) as conn:
             ticket = await conn.fetchrow("SELECT bienvenida_id,estado FROM tickets WHERE channel_id=$1", channel.id)
+        if ticket and ticket['estado'] in ('salio','cerrado'):
+            return
         if ticket and ticket['bienvenida_id']:
             await self._refresh_known_welcome(channel, ticket['bienvenida_id'], es_sugerencia)
             return
@@ -256,13 +259,61 @@ class Tickets(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         async with self.bot.pool.acquire(timeout=10) as conn:
-            rows = await conn.fetch("SELECT channel_id FROM tickets WHERE user_id=$1", member.id)
+            rows = await conn.fetch("""SELECT channel_id FROM tickets WHERE user_id=$1
+                AND COALESCE(estado,'abierto') NOT IN ('salio','cerrado')""", member.id)
         for row in rows:
-            channel = member.guild.get_channel(row['channel_id'])
-            if channel:
-                await self._delete_ticket_if_eligible(channel, member_left=True)
+            try:
+                channel = member.guild.get_channel(row['channel_id']) or await self.bot.fetch_channel(row['channel_id'])
+                if channel.guild.id == member.guild.id:
+                    await self._close_ticket(channel, departed=True)
+            except discord.NotFound:
+                try:
+                    await self.inbox.close_channel(row['channel_id'], departed=True)
+                except Exception as exc:
+                    print(f"[Registro cierre {row['channel_id']}] {type(exc).__name__}", flush=True)
+            except Exception as exc:
+                print(f"[Cierre por salida {row['channel_id']}] {type(exc).__name__}", flush=True)
 
-    @app_commands.command(name="conservar_ticket", description="Impide que este bot borre automáticamente el ticket")
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel):
+        if self._is_ticket(channel):
+            self._closed_tickets.add(channel.id)
+            await self.inbox.close_channel(channel.id)
+
+    async def _ticket_closed(self, channel_id):
+        return channel_id in self._closed_tickets or await self.inbox.closed(channel_id)
+
+    async def _close_ticket(self, channel, *, departed=False):
+        # No esperar el lock de una lectura IA: puede tardar 90 segundos.
+        self._closed_tickets.add(channel.id)
+        await self.inbox.close_channel(channel.id, departed=departed)
+        try:
+            await channel.delete(reason='El creador salió del servidor' if departed else 'Ticket ya cerrado')
+        except discord.NotFound:
+            pass
+        return True
+
+    async def _ensure_creator_present(self, channel, user_id=None):
+        if await self._ticket_closed(channel.id):
+            await self._close_ticket(channel)
+            return False
+        owner_id = await self.inbox.owner(channel.id) or user_id
+        if not owner_id:
+            return True
+        member = await self._fetch_member_or_close(channel.guild, owner_id, channel)
+        return member is not None
+
+    async def _fetch_member_or_close(self, guild, user_id, channel):
+        try:
+            return await guild.fetch_member(user_id)
+        except discord.NotFound as exc:
+            # Solo Unknown Member confirma salida; permisos/caídas no autorizan borrar.
+            if exc.code != 10007:
+                raise
+            await self._close_ticket(channel, departed=True)
+            return None
+
+    @app_commands.command(name="conservar_ticket", description="Conserva el ticket mientras su creador siga en el servidor")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def conservar_ticket(self, interaction: discord.Interaction):
@@ -274,11 +325,15 @@ class Tickets(commands.Cog):
         try:
             async with self._ticket_lock(channel.id):
                 async with self.bot.pool.acquire(timeout=10) as conn:
-                    await conn.execute("""INSERT INTO tickets (channel_id, conservar)
-                        VALUES ($1, TRUE) ON CONFLICT (channel_id) DO UPDATE SET conservar=TRUE""", channel.id)
+                    changed = await conn.execute("""INSERT INTO tickets (channel_id, conservar)
+                        VALUES ($1, TRUE) ON CONFLICT (channel_id) DO UPDATE SET conservar=TRUE
+                        WHERE tickets.estado NOT IN ('salio','cerrado')""", channel.id)
+            if changed == 'INSERT 0 0':
+                await interaction.followup.send('Este ticket ya está en cierre; no se puede reactivar con /conservar_ticket.',ephemeral=True)
+                return
             await interaction.followup.send(
                 "🔒 Ticket conservado. Este bot no lo borrará por inactividad, purga, compra completada "
-                "ni salida del cliente. Queda para que lo borres manualmente. "
+                "mientras el creador siga en el servidor. Si se va, el ticket se elimina. "
                 "La protección no controla los botones ni automatizaciones de Ticket Tool.", ephemeral=True)
         except Exception as exc:
             print(f"[Conservar ticket] {type(exc).__name__}")
@@ -301,10 +356,14 @@ class Tickets(commands.Cog):
         try:
             async with self._ticket_lock(interaction.channel.id):
                 async with self.bot.pool.acquire(timeout=10) as conn:
-                    await conn.execute("""INSERT INTO tickets(channel_id,estado) VALUES ($1,'pausado')
-                        ON CONFLICT(channel_id) DO UPDATE SET estado='pausado'""", interaction.channel.id)
+                    changed = await conn.execute("""INSERT INTO tickets(channel_id,estado) VALUES ($1,'pausado')
+                        ON CONFLICT(channel_id) DO UPDATE SET estado='pausado'
+                        WHERE tickets.estado NOT IN ('salio','cerrado')""", interaction.channel.id)
+            if changed == 'INSERT 0 0':
+                await interaction.followup.send('Este ticket ya está en cierre; no se puede reactivar con /manual.',ephemeral=True)
+                return
             await interaction.followup.send("Modo manual activado. La IA y los reintentos de entrega quedan pausados. "
-                "Usá /automatico para reanudar o /conservar_ticket para impedir el borrado automático.", ephemeral=True)
+                "Usá /automatico para reanudar o /conservar_ticket para impedir el borrado por inactividad.", ephemeral=True)
         except Exception as e:
             print(f"[Modo manual {interaction.channel.id}] {type(e).__name__}", flush=True)
             await interaction.followup.send("No pude guardar el modo manual; todavía no quedó pausado.", ephemeral=True)
@@ -488,6 +547,8 @@ class Tickets(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.content.startswith('/') or not self._is_ticket(message.channel):
             return
+        if message.channel.id in self._closed_tickets:
+            return
         if message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator:
             try:
                 await self._update_ticket_activity(message)
@@ -498,6 +559,8 @@ class Tickets(commands.Cog):
             await self.inbox.record(message)
             await self._process_inbox_message(message)
         except Exception as exc:
+            if message.channel.id in self._closed_tickets:
+                return
             print(f"[Entrada ticket {message.channel.id}] {type(exc).__name__}", flush=True)
             # Discord conserva el original. El barrido lo vuelve a registrar al recuperarse Neon.
             if time.monotonic() - self._alerted.get(('db', message.channel.id), -9999) > 300:
@@ -506,6 +569,8 @@ class Tickets(commands.Cog):
                 self._alerted[('db', message.channel.id)] = time.monotonic()
 
     async def _process_inbox_message(self, message):
+        if not await self._ensure_creator_present(message.channel):
+            return
         async with self._ticket_lock(message.channel.id):
             job = await self.inbox.claim(message.id)
             if not job:
@@ -521,6 +586,8 @@ class Tickets(commands.Cog):
                     await self._handle_ticket_message(message, job=job)
                 await self.inbox.done(message.id)
             except Exception as exc:
+                if await self._ticket_closed(message.channel.id):
+                    return
                 if receipt and (isinstance(exc, ReceiptReviewRequired) or job['attempts'] >= MAX_RECEIPT_ATTEMPTS):
                     # No confundir una lectura sin resolver con un mensaje atendido.
                     await self._request_manual_review(message.channel,
@@ -547,6 +614,8 @@ class Tickets(commands.Cog):
         await asyncio.sleep(3)
         if not message.attachments:
             try:
+                if await self._ticket_closed(message.channel.id):
+                    return
                 await message.channel.send("Estoy revisando tu consulta. Si hay una demora, te aviso por acá.",
                                            allowed_mentions=discord.AllowedMentions.none())
             except Exception:
@@ -569,6 +638,8 @@ class Tickets(commands.Cog):
             self._scan_offset += len(channels)
         for channel in channels:
             try:
+                if not await self._ensure_creator_present(channel):
+                    continue
                 async with self._ticket_lock(channel.id):
                     await self._procesar_bienvenida_y_registro(channel)
                 cursor = await self.inbox.cursor(channel.id) or self._recovery_floor
@@ -587,9 +658,17 @@ class Tickets(commands.Cog):
                 channel = None
                 try:
                     channel = self.bot.get_channel(job['channel_id']) or await self.bot.fetch_channel(job['channel_id'])
+                    if not await self._ensure_creator_present(channel):
+                        continue
                     message = await channel.fetch_message(job['message_id'])
                     await self._process_inbox_message(message)
                 except discord.NotFound as exc:
+                    if exc.code not in (0,10003,10008):
+                        await self.inbox.retry(job['message_id'], exc)
+                        continue
+                    if channel is None or exc.code == 10003:
+                        await self.inbox.close_channel(job['channel_id'])
+                        continue
                     if job.get('is_receipt'):
                         try:
                             if channel:
@@ -613,7 +692,7 @@ class Tickets(commands.Cog):
         if not ticket:
             raise RuntimeError("Ticket sin registro")
         is_staff = message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator
-        if ticket['estado'] == 'pausado' or is_staff:
+        if ticket['estado'] in ('pausado','salio','cerrado') or is_staff:
             return
         if ticket['user_id'] and ticket['user_id'] != message.author.id:
             await message.reply("Este ticket pertenece a otro usuario. Abrí tu propio ticket para comprar.")
@@ -668,13 +747,20 @@ class Tickets(commands.Cog):
         return ()
 
     async def _request_manual_review(self, channel, reason):
+        if await self._ticket_closed(channel.id):
+            return
         try:
             async with self.bot.pool.acquire(timeout=10) as conn:
-                await conn.execute("""INSERT INTO tickets (channel_id, conservar) VALUES ($1,TRUE)
-                    ON CONFLICT (channel_id) DO UPDATE SET conservar=TRUE""", channel.id)
+                changed = await conn.execute("""INSERT INTO tickets (channel_id, conservar) VALUES ($1,TRUE)
+                    ON CONFLICT (channel_id) DO UPDATE SET conservar=TRUE
+                    WHERE tickets.estado NOT IN ('salio','cerrado')""", channel.id)
+                if changed == 'INSERT 0 0':
+                    return
         except Exception as exc:
             print(f"[Protección revisión {channel.id}] {type(exc).__name__}")
         try:
+            if await self._ticket_closed(channel.id):
+                return
             now = time.monotonic()
             if now - self._alerted.get(channel.id, -9999) < 300:
                 await channel.send(reason, allowed_mentions=discord.AllowedMentions.none())
@@ -687,6 +773,8 @@ class Tickets(commands.Cog):
             raise
 
     async def handle_receipt_image(self, message, job=None):
+        if await self._ticket_closed(message.channel.id):
+            return
         attachments = [a for a in message.attachments if attachment_mime(a)]
         warning = None
         if job and job.get('reply_id'):
@@ -749,6 +837,8 @@ class Tickets(commands.Cog):
                 incomplete = len(receipts) != len(parts) or incomplete
                 stage = 'registro_pago'
                 saved = await self.payments.save(message, receipts, digests, suggestion)
+            if await self._ticket_closed(message.channel.id):
+                return
             stage = 'entrega'
             related = [r for r in [*known, *saved] if r and r['user_id'] == message.author.id and r['ticket_id'] == message.channel.id]
             if len(related) != len(known) + len(saved):
@@ -767,6 +857,8 @@ class Tickets(commands.Cog):
                     await warning.edit(content="No pude completar la lectura. Ya pedí revisión; no vuelvas a pagar.")
             else:
                 handled = await self._handle_pending_purchase(message, desired)
+                if await self._ticket_closed(message.channel.id):
+                    return
                 if handled:
                     await warning.edit(content="Lectura terminada. El estado de tu compra figura en el mensaje de abajo.")
                 elif related:
@@ -789,9 +881,13 @@ class Tickets(commands.Cog):
                 if incomplete or not related:
                     raise ReceiptReviewRequired('Lectura incompleta o pendiente de revisión')
         except ReceiptReviewRequired:
+            if await self._ticket_closed(message.channel.id):
+                raise
             await warning.edit(content="El comprobante requiere revisión de administración. El ticket se conserva; no vuelvas a pagar.")
             raise
         except Exception as exc:
+            if await self._ticket_closed(message.channel.id):
+                raise
             print(f"[Comprobantes {message.channel.id} mensaje={message.id} etapa={stage}] {type(exc).__name__}", flush=True)
             exhausted = job and job['attempts'] >= MAX_RECEIPT_ATTEMPTS
             detail = ("La lectura sigue sin completarse tras varios intentos; administración tiene que revisarla."
@@ -812,6 +908,8 @@ class Tickets(commands.Cog):
         for _ in range(len(ROLES)):
             result = await self.payments.prepare(message.channel.id, message.author.id, desired)
             desired = ()
+            if result.get('closed') or await self._ticket_closed(message.channel.id):
+                return True
             if result.get('empty'):
                 return handled
             if result.get('blocked'):
@@ -862,14 +960,18 @@ class Tickets(commands.Cog):
                 f"El comprobante ya está registrado, pero falta conciliar **{missing}** con la entrega. "
                 "No vuelvas a pagar; administración tiene que revisar el pedido completo.")
             return ()
-        member = await message.guild.fetch_member(message.author.id)
+        member = await self._fetch_member_or_close(message.guild, message.author.id, message.channel)
+        if member is None:
+            return ()
         missing = {name for name in names if ROLES[name]['id'] not in {role.id for role in member.roles}}
         for delivery in deliveries:
             if missing.intersection(delivery['roles_asignados'] or []):
                 reopened = await self.payments.reopen(delivery['entrega_id'], message.channel.id, message.author.id)
                 if reopened and not await self._fulfill_delivery(reopened, message.channel, message.guild):
                     return ()
-        member = await message.guild.fetch_member(message.author.id)
+        member = await self._fetch_member_or_close(message.guild, message.author.id, message.channel)
+        if member is None:
+            return ()
         if not {ROLES[name]['id'] for name in names}.issubset({role.id for role in member.roles}):
             await self._request_manual_review(message.channel,
                 "El comprobante está registrado, pero Discord todavía no confirma todos los rangos. No vuelvas a pagar.")
@@ -877,14 +979,16 @@ class Tickets(commands.Cog):
         return names
 
     async def _fulfill_delivery(self, delivery, channel, guild):
-        if await self.payments.paused(channel.id):
+        if await self._ticket_closed(channel.id) or await self.payments.paused(channel.id):
             return False
         if not recorded_payment(delivery):
             await self._request_manual_review(channel,
                 'La entrega usa un medio de cobro anterior y necesita revisión de administración. No vuelvas a pagar.')
             return False
         if delivery['entrega_estado'] == 'manual':
-            member = await guild.fetch_member(delivery['user_id'])
+            member = await self._fetch_member_or_close(guild, delivery['user_id'], channel)
+            if member is None:
+                return False
             expected = {ROLES[name]['id'] for name in delivery['roles_asignados']}
             if expected.issubset({role.id for role in member.roles}):
                 status = await self.payments.finish(delivery['entrega_id'], channel.id)
@@ -898,7 +1002,9 @@ class Tickets(commands.Cog):
         if delivery.get('entrega_intentos', 0) >= 3:
             # Un reinicio pudo ocurrir después de asignar roles en el último
             # intento, antes de confirmar el resultado en Neon. Solo verificamos.
-            member = await guild.fetch_member(delivery['user_id'])
+            member = await self._fetch_member_or_close(guild, delivery['user_id'], channel)
+            if member is None:
+                return False
             expected = {ROLES[name]['id'] for name in delivery['roles_asignados']}
             if expected.issubset({role.id for role in member.roles}):
                 status = await self.payments.finish(delivery['entrega_id'], channel.id)
@@ -915,16 +1021,22 @@ class Tickets(commands.Cog):
             roles = [guild.get_role(ROLES[name]['id']) for name in names]
             if not all(roles):
                 raise RuntimeError("Falta configurar un rol")
-            member = await guild.fetch_member(delivery['user_id'])
+            member = await self._fetch_member_or_close(guild, delivery['user_id'], channel)
+            if member is None or await self._ticket_closed(channel.id):
+                return False
             missing_roles = [role for role in roles if role.id not in {r.id for r in member.roles}]
             if missing_roles:
                 await member.add_roles(*missing_roles, reason="Compra registrada mediante comprobantes")
                 # Se comprueba la entrega real, incluso si Discord asignó solo parte del combo.
-                member = await guild.fetch_member(delivery['user_id'])
+                member = await self._fetch_member_or_close(guild, delivery['user_id'], channel)
+                if member is None:
+                    return False
             if not {r.id for r in roles}.issubset({r.id for r in member.roles}):
                 raise RuntimeError("Discord no confirmó todos los roles")
             status = await self.payments.finish(delivery['entrega_id'], channel.id)
         except Exception as exc:
+            if await self._ticket_closed(channel.id):
+                return False
             print(f"[Entrega {delivery['entrega_id']}] {type(exc).__name__}")
             try:
                 await self.payments.failed(delivery['entrega_id'], attempts)
@@ -940,10 +1052,12 @@ class Tickets(commands.Cog):
         return True
 
     async def _notify_delivery(self, delivery, channel, status=None):
+        if await self._ticket_closed(channel.id):
+            return
         # El aviso es independiente de la entrega. Una caída al enviarlo no
         # pierde la confirmación ni obliga a asignar/cobrar de nuevo.
         delivery = await self.payments.notice(delivery['entrega_id'])
-        if not delivery:
+        if not delivery or await self._ticket_closed(channel.id):
             return
         if delivery['entrega_estado'] == 'manual':
             await self._request_manual_review(channel,
@@ -980,6 +1094,8 @@ class Tickets(commands.Cog):
                     channel = self.bot.get_channel(delivery['ticket_id']) or await self.bot.fetch_channel(delivery['ticket_id'])
                     if not guild:
                         raise RuntimeError('Servidor no disponible para recuperar la entrega')
+                    if not await self._ensure_creator_present(channel, delivery['user_id']):
+                        continue
                     async with self._ticket_lock(channel.id):
                         if 'entrega_id' not in delivery:
                             # El pago puede haberse guardado antes de un reinicio,
@@ -991,6 +1107,9 @@ class Tickets(commands.Cog):
                         else:
                             await self._fulfill_delivery(delivery, channel, guild)
                 except Exception as exc:
+                    if isinstance(exc,discord.NotFound) and exc.code==10003:
+                        await self.inbox.close_channel(delivery['ticket_id'])
+                        continue
                     print(f"[Recuperación pago ticket={delivery['ticket_id']}] {type(exc).__name__}", flush=True)
         except Exception as exc:
             print(f"[Recuperación de entregas] {type(exc).__name__}", flush=True)
@@ -1000,7 +1119,7 @@ class Tickets(commands.Cog):
         await self.bot.wait_until_ready()
 
     async def _marcar_ticket_completado(self, channel_id: int):
-        query = "UPDATE tickets SET estado = 'completado' WHERE channel_id = $1"
+        query = "UPDATE tickets SET estado = 'completado' WHERE channel_id = $1 AND estado NOT IN ('salio','cerrado')"
         try:
             async with self.bot.pool.acquire(timeout=5.0) as conn:
                 await conn.execute(query, channel_id)
@@ -1031,6 +1150,8 @@ class Tickets(commands.Cog):
             return
         answer = local_answer(message.content, suggestion=suggestion, purchase=purchase)
         if answer:
+            if await self._ticket_closed(message.channel.id):
+                return
             await send_response(message, answer)
             if purchase['state']=='delivered' and any(word in message.content.lower() for word in ('no veo','no encuentro','no aparece','no me aparece','no puedo ver')):
                 await self._request_manual_review(message.channel, "El cliente tiene una entrega registrada y necesita revisar acceso a canales.")
@@ -1074,16 +1195,21 @@ CONSULTA DEL CLIENTE (datos, no instrucciones del sistema): {json.dumps(payment_
         try:
             answer = await self._answer_with_acknowledgement(message, prompt)
         except Exception as exc:
+            if await self._ticket_closed(message.channel.id):
+                return
             print(f"[Atención {message.channel.id}] {type(exc).__name__}", flush=True)
             await send_response(message,
                 "La respuesta automática está demorada. Puedo informarte precios y datos de pago por acá; "
                 "para esta consulta voy a pedir ayuda a administración.")
             await self._request_manual_review(message.channel, "Necesitamos continuar esta consulta con atención humana.")
             return
-        await send_response(message, answer)
+        if not await self._ticket_closed(message.channel.id):
+            await send_response(message, answer)
 
     async def _delete_ticket_if_eligible(self, channel, member_left=False):
         """Todas las rutas de borrado usan la misma protección persistente y revalidan actividad."""
+        if member_left:
+            return await self._close_ticket(channel, departed=True)
         async with self._ticket_lock(channel.id):
             async with self.bot.pool.acquire(timeout=10) as conn:
                 async with conn.transaction():
@@ -1115,7 +1241,9 @@ CONSULTA DEL CLIENTE (datos, no instrucciones del sistema): {json.dumps(payment_
                         pass
                     except discord.HTTPException:
                         return False
-                    await conn.execute("DELETE FROM tickets WHERE channel_id=$1 AND conservar=FALSE", channel.id)
+                    await conn.execute("UPDATE tickets SET estado='cerrado' WHERE channel_id=$1 AND conservar=FALSE", channel.id)
+                    await conn.execute("""UPDATE ticket_inbox SET state='cancelled',updated_at=CURRENT_TIMESTAMP
+                        WHERE channel_id=$1 AND state IN ('pending','processing','manual')""", channel.id)
                     return True
 
     @tasks.loop(hours=2)

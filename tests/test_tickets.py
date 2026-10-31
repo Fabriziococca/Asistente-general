@@ -55,13 +55,15 @@ def fixture():
                       recoverable=AsyncMock(return_value=[]))
     cog.inbox = NS(record=AsyncMock(),claim=AsyncMock(return_value={'attempts':1}),
                    done=AsyncMock(),retry=AsyncMock(),manual=AsyncMock(),progress=AsyncMock(),
-                   receipt_status=AsyncMock(return_value=None))
+                   receipt_status=AsyncMock(return_value=None),closed=AsyncMock(return_value=False),
+                   owner=AsyncMock(return_value=None),close_channel=AsyncMock())
     author = NS(id=123, bot=False, guild_permissions=NS(administrator=False), roles=[])
     author.add_roles = AsyncMock()
     roles = {r['id']: NS(id=r['id']) for r in ROLES.values()}
     guild = NS(id=567, get_role=roles.get, get_member=lambda uid: author,
                fetch_member=AsyncMock(return_value=author))
     channel = NS(id=456, name='ticket-test', category_id=0, sent=[], delete=AsyncMock())
+    channel.guild = guild
     async def send(content=None, **kw):
         channel.sent.append(content)
         return NS(id=10000+len(channel.sent),edit=AsyncMock())
@@ -238,11 +240,10 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         await cog._fulfill_delivery(delivery(), msg.channel, msg.guild)
         msg.author.add_roles.assert_not_awaited()
 
-    async def test_preserved_ticket_survives_all_bot_deletion_paths(self):
+    async def test_preserved_ticket_survives_inactivity_cleanup(self):
         cog, conn, msg = fixture()
         conn.row = {'conservar': True}
-        for member_left in (True, False):
-            self.assertFalse(await cog._delete_ticket_if_eligible(msg.channel, member_left))
+        self.assertFalse(await cog._delete_ticket_if_eligible(msg.channel))
         msg.channel.delete.assert_not_awaited()
 
     async def test_recent_discord_activity_prevents_stale_db_cleanup(self):
@@ -254,11 +255,11 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await cog._delete_ticket_if_eligible(msg.channel))
         msg.channel.delete.assert_not_awaited()
 
-    async def test_unfinished_delivery_prevents_cleanup_even_if_user_left(self):
+    async def test_unfinished_delivery_prevents_inactivity_cleanup(self):
         cog, conn, msg = fixture()
         conn.row = {'conservar': False}
         conn.pending = True
-        self.assertFalse(await cog._delete_ticket_if_eligible(msg.channel, True))
+        self.assertFalse(await cog._delete_ticket_if_eligible(msg.channel))
         msg.channel.delete.assert_not_awaited()
 
     async def test_staff_message_does_not_become_ticket_owner(self):

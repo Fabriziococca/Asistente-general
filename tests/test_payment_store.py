@@ -106,7 +106,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         interaction=NS(channel=message.channel,response=NS(defer=AsyncMock()),followup=NS(send=AsyncMock()))
         await Tickets.conservar_ticket.callback(cog,interaction)
         restarted=Tickets(cog.bot)
-        self.assertFalse(await restarted._delete_ticket_if_eligible(message.channel,member_left=True))
+        self.assertFalse(await restarted._delete_ticket_if_eligible(message.channel))
         message.channel.delete.assert_not_awaited()
 
     async def test_duplicate_bytes_and_operation_do_not_duplicate_finances(self):

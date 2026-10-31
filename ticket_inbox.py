@@ -39,11 +39,33 @@ class TicketInbox:
                     VALUES ('inbox_start',CURRENT_TIMESTAMP) ON CONFLICT(name) DO UPDATE
                     SET name=EXCLUDED.name RETURNING last_run""")
 
+    async def closed(self, channel_id):
+        async with self.pool.acquire(timeout=10) as conn:
+            return await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM tickets
+                WHERE channel_id=$1 AND estado IN ('salio','cerrado'))""", channel_id)
+
+    async def owner(self, channel_id):
+        async with self.pool.acquire(timeout=10) as conn:
+            return await conn.fetchval('SELECT user_id FROM tickets WHERE channel_id=$1', channel_id)
+
+    async def close_channel(self, channel_id, *, departed=False):
+        """Cierre durable antes de borrar Discord; conserva pagos y errores originales."""
+        async with self.pool.acquire(timeout=10) as conn:
+            async with conn.transaction():
+                await conn.execute("""INSERT INTO tickets(channel_id,estado) VALUES($1,$2)
+                    ON CONFLICT(channel_id) DO UPDATE SET estado=CASE
+                        WHEN tickets.estado='salio' OR EXCLUDED.estado='salio' THEN 'salio'
+                        ELSE 'cerrado' END""", channel_id, 'salio' if departed else 'cerrado')
+                await conn.execute("""UPDATE ticket_inbox SET state='cancelled',updated_at=CURRENT_TIMESTAMP
+                    WHERE channel_id=$1 AND state IN ('pending','processing','manual')""", channel_id)
+
     async def record(self, message):
         is_receipt = any(attachment_mime(a) for a in getattr(message, 'attachments', []))
         async with self.pool.acquire(timeout=10) as conn:
             await conn.execute("""INSERT INTO ticket_inbox(message_id,channel_id,guild_id,user_id,is_receipt)
-                VALUES ($1,$2,$3,$4,$5) ON CONFLICT(message_id) DO UPDATE
+                SELECT $1,$2,$3,$4,$5 WHERE NOT EXISTS(SELECT 1 FROM tickets
+                    WHERE channel_id=$2 AND estado IN ('salio','cerrado'))
+                ON CONFLICT(message_id) DO UPDATE
                 SET is_receipt=TRUE WHERE NOT ticket_inbox.is_receipt AND EXCLUDED.is_receipt""",
                 message.id, message.channel.id, message.guild.id, message.author.id, is_receipt)
 
@@ -53,6 +75,8 @@ class TicketInbox:
                 retry_at=CURRENT_TIMESTAMP+INTERVAL '3 minutes',updated_at=CURRENT_TIMESTAMP
                 WHERE message_id=$1 AND state IN ('pending','processing')
                 AND retry_at <= CURRENT_TIMESTAMP
+                AND NOT EXISTS(SELECT 1 FROM tickets t WHERE t.channel_id=ticket_inbox.channel_id
+                    AND t.estado IN ('salio','cerrado'))
                 AND (attempts=0 OR NOT EXISTS(SELECT 1 FROM tickets t
                     WHERE t.channel_id=ticket_inbox.channel_id AND t.estado='pausado'))
                 RETURNING *""", message_id)
@@ -64,7 +88,9 @@ class TicketInbox:
     async def manual(self, message_id, error):
         async with self.pool.acquire(timeout=10) as conn:
             await conn.execute("""UPDATE ticket_inbox SET state='manual',error_type=$2,
-                updated_at=CURRENT_TIMESTAMP WHERE message_id=$1""", message_id, type(error).__name__)
+                updated_at=CURRENT_TIMESTAMP WHERE message_id=$1 AND state IN ('pending','processing')
+                AND NOT EXISTS(SELECT 1 FROM tickets t WHERE t.channel_id=ticket_inbox.channel_id
+                    AND t.estado IN ('salio','cerrado'))""", message_id, type(error).__name__)
 
     async def receipt_status(self, channel_id, user_id):
         async with self.pool.acquire(timeout=10) as conn:
@@ -77,18 +103,22 @@ class TicketInbox:
     async def done(self, message_id, reply_id=None):
         async with self.pool.acquire(timeout=10) as conn:
             await conn.execute("""UPDATE ticket_inbox SET state='done',reply_id=COALESCE($2,reply_id),
-                updated_at=CURRENT_TIMESTAMP,error_type=NULL WHERE message_id=$1""", message_id, reply_id)
+                updated_at=CURRENT_TIMESTAMP,error_type=NULL WHERE message_id=$1
+                AND state <> 'cancelled'""", message_id, reply_id)
 
     async def retry(self, message_id, error):
         async with self.pool.acquire(timeout=10) as conn:
             await conn.execute("""UPDATE ticket_inbox SET state='pending',error_type=$2,
                 retry_at=CURRENT_TIMESTAMP+make_interval(secs => LEAST(3600,30*power(2,LEAST(attempts,7)))),updated_at=CURRENT_TIMESTAMP
-                WHERE message_id=$1""", message_id, type(error).__name__)
+                WHERE message_id=$1 AND state IN ('pending','processing')
+                AND NOT EXISTS(SELECT 1 FROM tickets t WHERE t.channel_id=ticket_inbox.channel_id
+                    AND t.estado IN ('salio','cerrado'))""", message_id, type(error).__name__)
 
     async def pending(self):
         async with self.pool.acquire(timeout=10) as conn:
             return await conn.fetch("""SELECT i.* FROM ticket_inbox i LEFT JOIN tickets t ON t.channel_id=i.channel_id
                 WHERE i.state IN ('pending','processing') AND i.retry_at <= CURRENT_TIMESTAMP
+                AND t.estado IS DISTINCT FROM 'salio' AND t.estado IS DISTINCT FROM 'cerrado'
                 AND (i.attempts=0 OR t.estado IS DISTINCT FROM 'pausado') ORDER BY i.message_id LIMIT 30""")
 
     async def cursor(self, channel_id):

@@ -97,7 +97,7 @@ class PaymentStore:
         wanted = set((ticket['rangos_solicitados'] or ()) if ticket else ()) | set(desired)
         remaining = tuple(name for name in PRICES if name in wanted - delivered_roles)
         await conn.execute("""UPDATE tickets SET rangos_solicitados=$2,
-            estado=CASE WHEN cardinality($2::text[]) > 0 AND estado IS DISTINCT FROM 'pausado'
+            estado=CASE WHEN cardinality($2::text[]) > 0 AND COALESCE(estado,'abierto') NOT IN ('pausado','salio','cerrado')
                 THEN 'abierto' ELSE estado END WHERE channel_id=$1""",
             ticket_id, list(remaining) or None)
         return remaining
@@ -113,6 +113,8 @@ class PaymentStore:
         async with self.pool.acquire(timeout=10) as conn:
             async with conn.transaction():
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", ticket_id)
+                if await conn.fetchval("SELECT estado IN ('salio','cerrado') FROM tickets WHERE channel_id=$1", ticket_id):
+                    return {'closed': True}
                 desired = await self._remember(conn, ticket_id, user_id, desired)
                 pending = await conn.fetchrow("""SELECT * FROM pagos WHERE ticket_id=$1 AND user_id=$2
                     AND entrega_estado IN ('preparado','reintentar','manual') ORDER BY pago_id LIMIT 1""", ticket_id, user_id)
@@ -158,7 +160,7 @@ class PaymentStore:
             return await conn.fetchval("""UPDATE pagos SET entrega_intentos=entrega_intentos+1,
                 entrega_actualizada=CURRENT_TIMESTAMP WHERE entrega_id=$1
                 AND entrega_estado IN ('preparado','reintentar') AND entrega_intentos < 3
-                AND NOT EXISTS(SELECT 1 FROM tickets t WHERE t.channel_id=pagos.ticket_id AND t.estado='pausado')
+                AND NOT EXISTS(SELECT 1 FROM tickets t WHERE t.channel_id=pagos.ticket_id AND t.estado IN ('pausado','salio','cerrado'))
                 RETURNING entrega_intentos""", delivery_id)
 
     async def finish(self, delivery_id, ticket_id):
@@ -176,7 +178,7 @@ class PaymentStore:
                     aviso_pendiente=TRUE WHERE entrega_id=$1 AND entrega_estado IN ('preparado','reintentar','manual')""", delivery_id)
                 pending = await conn.fetchval("""SELECT EXISTS(SELECT 1 FROM pagos WHERE ticket_id=$1
                     AND entrega_estado IN ('pendiente','preparado','reintentar','manual'))""", ticket_id)
-                await conn.execute("""UPDATE tickets SET estado=CASE WHEN estado='pausado' THEN estado
+                await conn.execute("""UPDATE tickets SET estado=CASE WHEN estado IN ('pausado','salio','cerrado') THEN estado
                     WHEN $3 THEN 'abierto' ELSE 'completado' END, rangos_solicitados=$2,
                     ultimo_mensaje=CURRENT_TIMESTAMP WHERE channel_id=$1""",
                     ticket_id, list(remaining) or None, bool(remaining) or pending)
@@ -196,6 +198,7 @@ class PaymentStore:
                 rows = await conn.fetch("""UPDATE pagos SET entrega_estado='preparado',
                     entrega_intentos=0, entrega_actualizada=CURRENT_TIMESTAMP
                     WHERE entrega_id=$1 AND ticket_id=$2 AND user_id=$3 AND entrega_estado='entregado'
+                    AND NOT EXISTS(SELECT 1 FROM tickets t WHERE t.channel_id=pagos.ticket_id AND t.estado IN ('salio','cerrado'))
                     RETURNING *""", delivery_id, ticket_id, user_id)
                 return dict(rows[0]) if rows else None
 
@@ -208,7 +211,7 @@ class PaymentStore:
 
     async def paused(self, ticket_id):
         async with self.pool.acquire(timeout=10) as conn:
-            return await conn.fetchval("SELECT estado='pausado' FROM tickets WHERE channel_id=$1", ticket_id)
+            return await conn.fetchval("SELECT estado IN ('pausado','salio','cerrado') FROM tickets WHERE channel_id=$1", ticket_id)
 
     async def notice(self, delivery_id):
         async with self.pool.acquire(timeout=10) as conn:
@@ -232,6 +235,7 @@ class PaymentStore:
                 WHERE p.entrega_estado='pendiente' AND p.aviso_pendiente
                 AND COALESCE(p.entrega_actualizada,p.fecha_pago) < CURRENT_TIMESTAMP - INTERVAL '2 minutes'
                 AND t.estado IS DISTINCT FROM 'pausado'
+                AND t.estado IS DISTINCT FROM 'salio' AND t.estado IS DISTINCT FROM 'cerrado'
                 AND ((p.moneda='ARS' AND (p.metodo_pago IS NULL OR p.metodo_pago IN ('transferencia','mercadopago','uala','otro')))
                     OR (p.moneda='USDT' AND p.metodo_pago='binance')
                     OR (p.moneda='USD' AND p.metodo_pago='paypal' AND p.politica_precio=$1))
@@ -248,4 +252,5 @@ class PaymentStore:
                     OR (p.moneda='USDT' AND p.metodo_pago='binance')
                     OR (p.moneda='USD' AND p.metodo_pago='paypal' AND p.politica_precio=$1))
                 AND t.estado IS DISTINCT FROM 'pausado'
+                AND t.estado IS DISTINCT FROM 'salio' AND t.estado IS DISTINCT FROM 'cerrado'
                 ORDER BY p.entrega_id, p.pago_id LIMIT 25""", CAMPAIGN_ID)

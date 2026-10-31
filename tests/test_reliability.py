@@ -134,7 +134,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
             await cog._fulfill_delivery(delivery,message.channel,message.guild)
         self.assertEqual((await self.store.summary(-456,-123))['state'],'delivered')
         self.assertTrue(await self.conn.fetchval("SELECT aviso_pendiente FROM pagos WHERE comprobante_hash='one'"))
-        self.assertFalse(await cog._delete_ticket_if_eligible(message.channel,member_left=True))
+        self.assertFalse(await cog._delete_ticket_if_eligible(message.channel))
         message.channel.send.side_effect=normal_send
         await cog._recover_deliveries()
         self.assertIn('Ya tenés los rangos **Diamante**',message.channel.sent[-1])

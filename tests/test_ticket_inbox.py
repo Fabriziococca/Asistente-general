@@ -128,7 +128,7 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('varios intentos',progress[job['reply_id']].edit.await_args.kwargs['content'])
         # Aun sin la marca de conservar, el trabajo manual impide borrar el ticket.
         await self.conn.execute('UPDATE tickets SET conservar=FALSE WHERE channel_id=-456')
-        self.assertFalse(await cog._delete_ticket_if_eligible(message.channel,member_left=True))
+        self.assertFalse(await cog._delete_ticket_if_eligible(message.channel))
         followup=NS(**vars(message));followup.id=1001;followup.content='rango diamante';followup.attachments=[]
         await cog.on_message(followup)
         self.assertIn('revisión de administración',followup.reply.await_args.args[0])
@@ -230,7 +230,7 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
         cog.bot.pool=payment_fixtures.BoundConnection(self.conn)
         message.channel.id=-456
         await self.inbox.record(self.message)
-        self.assertFalse(await cog._delete_ticket_if_eligible(message.channel,member_left=True))
+        self.assertFalse(await cog._delete_ticket_if_eligible(message.channel))
         message.channel.delete.assert_not_awaited()
 
     async def test_manual_resume_preserves_ticket_protection(self):

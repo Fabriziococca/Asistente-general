@@ -14,9 +14,9 @@ BINANCE_PAY_ID = '552346130'
 BINANCE_RECIPIENT_ALIASES = ('fabrococca',)
 
 PRICES = {
-    'Diamante': {'ARS': Decimal('4700'), 'USDT': Decimal('4.5')},
-    'Oro': {'ARS': Decimal('4200'), 'USDT': Decimal('4')},
-    'Plata': {'ARS': Decimal('2200'), 'USDT': Decimal('2')},
+    'Diamante': {'ARS': Decimal('5900'), 'USDT': Decimal('4.5')},
+    'Oro': {'ARS': Decimal('5300'), 'USDT': Decimal('4')},
+    'Plata': {'ARS': Decimal('2300'), 'USDT': Decimal('2')},
 }
 SUGGESTION_PRICES = {'ARS': Decimal('4000'), 'USDT': Decimal('4')}
 CURRENT_METHODS = {'ARS': 'transferencia', 'USDT': 'binance'}
@@ -27,9 +27,9 @@ BINANCE_DETAILS = f'**Binance Pay · USDT**\nPay ID: `{BINANCE_PAY_ID}`\nEnviá 
 PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
                    '\n\n' + BINANCE_DETAILS)
 PAYMENT_METHODS = 'Solo aceptamos **transferencia en pesos argentinos a CBU/CVU** o **USDT por Binance Pay**.'
-PRICE_LIST = ('💎 Diamante: **$4.700 ARS / 4,50 USDT**\n'
-              '🥇 Oro: **$4.200 ARS / 4 USDT**\n🥈 Plata: **$2.200 ARS / 2 USDT**\n'
-              'Los tres: **$11.100 ARS / 10,50 USDT**.\n'
+PRICE_LIST = ('💎 Diamante: **$5.900 ARS / 4,50 USDT**\n'
+              '🥇 Oro: **$5.300 ARS / 4 USDT**\n🥈 Plata: **$2.300 ARS / 2 USDT**\n'
+              'Los tres: **$13.500 ARS / 10,50 USDT**.\n'
               'Son permanentes y cada rango tiene su propio contenido; Diamante no incluye Oro ni Plata.')
 
 

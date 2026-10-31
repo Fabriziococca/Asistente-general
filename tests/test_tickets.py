@@ -99,7 +99,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
     async def test_passes_all_photos_and_current_roles_to_purchase(self):
         cog, _, msg = fixture()
         msg.attachments = [attachment(b'photo1'), attachment(b'photo2', None)]
-        cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes': [reading(), reading(1, 6400)]}))
+        cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes': [reading(), reading(1, 7600)]}))
         cog.payments.save.return_value = [dict(pago_id=1,user_id=123,ticket_id=456), dict(pago_id=2,user_id=123,ticket_id=456)]
         cog._handle_pending_purchase = AsyncMock(return_value=True)
         await cog.handle_receipt_image(msg)

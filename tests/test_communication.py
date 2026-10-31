@@ -15,7 +15,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
     def test_prices_and_scope_without_provider(self):
         for content in ('Hola, ¿cuánto cuesta?', 'Precios?', '¿Diamante incluye Oro y Plata?'):
             answer=local_answer(content)
-            self.assertIn('4.700',answer)
+            self.assertIn('5.900',answer)
             self.assertIn('no incluye',answer)
         self.assertFalse(requested_roles('cuanto cuesta diamante'))
 
@@ -40,7 +40,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
     def test_bare_rank_after_file_is_a_purchase_followup(self):
         answer=local_answer('diamante',purchase={'state':'unknown','has_attachment':True})
         self.assertIn('todavía no',answer)
-        self.assertNotIn('4.700',answer)
+        self.assertNotIn('5.900',answer)
 
     async def test_receipt_state_survives_missing_recent_history_without_calling_google(self):
         cog,_,message=fixture()
@@ -115,7 +115,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         cog._generate_content_with_rotation=AsyncMock()
         await cog.handle_support_query(message)
         cog._generate_content_with_rotation.assert_not_awaited()
-        self.assertIn('4.700',message.reply.await_args.args[0])
+        self.assertIn('5.900',message.reply.await_args.args[0])
 
     async def test_prompt_has_chronological_history_and_real_authorship(self):
         cog,_,message=fixture()

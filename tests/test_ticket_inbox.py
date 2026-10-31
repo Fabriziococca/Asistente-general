@@ -49,7 +49,7 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def receipt_reading():
         from test_receipts import reading
-        return json.dumps({'comprobantes':[reading(monto=4700)]})
+        return json.dumps({'comprobantes':[reading(monto=5900)]})
 
     async def make_retry_due(self, message):
         await self.conn.execute("UPDATE ticket_inbox SET retry_at=CURRENT_TIMESTAMP-INTERVAL '1 second' WHERE message_id=$1",message.id)
@@ -83,7 +83,7 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
         job=await self.conn.fetchrow('SELECT * FROM ticket_inbox WHERE message_id=1000')
         self.assertEqual((job['state'],job['attempts'],job['error_type']),('done',2,None))
         self.assertEqual(await self.conn.fetchval('SELECT count(*) FROM pagos WHERE comprobante_hash IS NOT NULL'),1)
-        self.assertEqual(await self.conn.fetchval('SELECT sum(monto) FROM pagos WHERE comprobante_hash IS NOT NULL'),4700)
+        self.assertEqual(await self.conn.fetchval('SELECT sum(monto) FROM pagos WHERE comprobante_hash IS NOT NULL'),5900)
         message.author.add_roles.assert_awaited_once()
         self.assertEqual((await self.store.summary(-456,-123))['state'],'delivered')
         self.assertIsNone(await cog.inbox.receipt_status(-456,-123))

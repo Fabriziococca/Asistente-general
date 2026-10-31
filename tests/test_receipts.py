@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from receipts import attachment_mime, choose_roles, money, parse_receipts, requested_roles
 
 
-def reading(index=0, amount=4700, **changes):
+def reading(index=0, amount=5900, **changes):
     result = dict(archivo_indice=index, es_comprobante=True, monto=amount, moneda='ARS',
                   destinatario='Fabrizio Giovanni Cocca Ducay', cuenta_destino=None,
                   pago_completado=None, numero_operacion='E1792432861708X', metodo_pago='transferencia')
@@ -22,7 +22,7 @@ class ReceiptTests(unittest.TestCase):
     def test_wilobank_receipt_without_completion_phrase_or_account(self):
         receipts, issues = parse(reading(banco_destino='WILOBANK S.A.'))
         self.assertFalse(issues)
-        self.assertEqual(receipts[0].amount, Decimal('4700'))
+        self.assertEqual(receipts[0].amount, Decimal('5900'))
 
     def test_account_is_enough_when_name_is_abbreviated(self):
         receipts, _ = parse(reading(destinatario='F. C.', cuenta_destino='3840200500000026286680'))
@@ -46,21 +46,21 @@ class ReceiptTests(unittest.TestCase):
                 self.assertTrue(issues)
 
     def test_two_images_cover_all_three_roles(self):
-        receipts, issues = parse(reading(), reading(1, 6400, numero_operacion='E1792432948955Q'))
+        receipts, issues = parse(reading(), reading(1, 7600, numero_operacion='E1792432948955Q'))
         self.assertFalse(issues)
         roles, missing = choose_roles(sum(r.amount for r in receipts), 'ARS', requested_roles('rango diamante, rango oro, rango plata'))
         self.assertEqual(roles, ('Diamante', 'Oro', 'Plata'))
         self.assertEqual(missing, 0)
 
     def test_partial_payment_is_not_an_ai_decision(self):
-        roles, missing = choose_roles(Decimal(4700), 'ARS', ('Diamante', 'Oro', 'Plata'))
+        roles, missing = choose_roles(Decimal(5900), 'ARS', ('Diamante', 'Oro', 'Plata'))
         self.assertFalse(roles)
-        self.assertEqual(missing, 6400)
+        self.assertEqual(missing, 7600)
 
     def test_combo_and_overpayment(self):
-        self.assertEqual(choose_roles(Decimal(6400), 'ARS')[0], ('Oro', 'Plata'))
-        self.assertEqual(choose_roles(Decimal(5000), 'ARS', ('Diamante',))[0], ('Diamante',))
-        self.assertFalse(choose_roles(Decimal(5000), 'ARS')[0])
+        self.assertEqual(choose_roles(Decimal(7600), 'ARS')[0], ('Oro', 'Plata'))
+        self.assertEqual(choose_roles(Decimal(6000), 'ARS', ('Diamante',))[0], ('Diamante',))
+        self.assertFalse(choose_roles(Decimal(6000), 'ARS')[0])
 
     def test_binance_usd(self):
         receipts, issues = parse(reading(monto='4.50', moneda='USDT', destinatario='fabrococca',pay_id_destino='552346130', metodo_pago='binance'))
@@ -87,14 +87,14 @@ class ReceiptTests(unittest.TestCase):
         for value in (0, -1, True, 'NaN', 'Infinity', None):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 money(value)
-        self.assertEqual(money('6.400,00'), 6400)
-        self.assertEqual(money('6,400.00'), 6400)
+        self.assertEqual(money('7.600,00'), 7600)
+        self.assertEqual(money('7,600.00'), 7600)
 
     def test_peso_thousands_are_not_mistaken_for_cents(self):
-        for amount in ('4.700','4.700,00','4700'):
+        for amount in ('5.900','5.900,00','5900'):
             receipts,issues=parse(reading(monto=amount))
             self.assertFalse(issues)
-            self.assertEqual(receipts[0].amount,4700)
+            self.assertEqual(receipts[0].amount,5900)
         self.assertEqual(money('1.234.567', 'ARS'),1234567)
         self.assertEqual(money('4.500', 'USDT'),Decimal('4.50'))
 

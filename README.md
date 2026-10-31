@@ -82,6 +82,10 @@ El supervisor recrea el cliente después de fallos transitorios, cierra el pool 
 
 Render Free puede suspender servicios por inactividad o al consumir sus horas incluidas; Gemini gratuito también tiene cuotas y disponibilidad variable. Estas mejoras recuperan trabajo al volver a estar disponible el servicio y reducen silencios; no ofrecen disponibilidad continua garantizada. No se agregan servicios pagos ni mecanismos artificiales para impedir la suspensión. Referencias: https://render.com/docs/free y https://ai.google.dev/gemini-api/docs/rate-limits.
 
+## Precios definitivos en pesos
+
+Diamante $5.900 ARS, Oro $5.300 ARS y Plata $2.300 ARS; los tres $13.500 ARS. Peticiones: $4.000 ARS, solo tras confirmación de administración. Estos precios se mantienen al retirar campañas internacionales temporales.
+
 ## Medios de cobro vigentes
 
 Solo transferencia en pesos argentinos a CBU/CVU y USDT por Binance Pay. El Pay ID confirmado por el propietario es `552346130`; alias local `LENGUA.LUJOSA.TELAR`, CBU/CVU `3840200500000026286680`.

@@ -17,6 +17,19 @@ from ticket_inbox import ReceiptReviewRequired
 
 
 class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
+    def test_permanent_peso_prices_and_welcome_refresh(self):
+        from payment_policy import PRICES, SUGGESTION_PRICES, PRICE_LIST
+        from scripts.refresh_payment_messages import needs_refresh
+        self.assertEqual([p['ARS'] for p in PRICES.values()],[5900,5300,2300])
+        self.assertEqual(sum(p['ARS'] for p in PRICES.values()),13500)
+        self.assertEqual(SUGGESTION_PRICES['ARS'],4000)
+        self.assertIn('$13.500 ARS',PRICE_LIST)
+        content,embed=ticket_welcome()
+        current={'content':content,'embeds':[embed.to_dict()]}
+        self.assertFalse(needs_refresh(current))
+        old=json.loads(json.dumps(current).replace('5.900','4.700'))
+        self.assertTrue(needs_refresh(old))
+
     def test_identity_is_not_published_in_generic_payment_answers_or_welcomes(self):
         for question in ('hola', 'datos de pago', 'cómo pago', 'pasame el alias', 'binance'):
             for suggestion in (False, True):
@@ -87,9 +100,9 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     def test_existing_personalized_status_keeps_payment_evidence(self):
         from scripts.refresh_payment_messages import replacement
-        old = {'content':f'Comprobante registrado: 4700 ARS. Titular: {BANK_HOLDER}.','embeds':[]}
+        old = {'content':f'Comprobante registrado: 5900 ARS. Titular: {BANK_HOLDER}.','embeds':[]}
         result = replacement(old)
-        self.assertIn('Comprobante registrado: 4700 ARS', result['content'])
+        self.assertIn('Comprobante registrado: 5900 ARS', result['content'])
         self.assertFalse(private_identity_reference(result['content']))
 
     def test_only_supported_method_currency_pairs(self):
@@ -179,10 +192,10 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         totals=financial_totals([
             {'moneda':'USD','monto':Decimal('4.50'),'cantidad':2,'concepto':'Anterior'},
             {'moneda':'USDT','monto':Decimal('4.50'),'cantidad':1,'concepto':'Diamante'},
-            {'moneda':'ARS','monto':4700,'cantidad':1,'concepto':'Diamante'}])
+            {'moneda':'ARS','monto':5900,'cantidad':1,'concepto':'Diamante'}])
         self.assertEqual(totals['USD']['amount'],Decimal('9.00'))
         self.assertEqual(totals['USDT']['amount'],Decimal('4.50'))
-        self.assertEqual(totals['ARS']['amount'],4700)
+        self.assertEqual(totals['ARS']['amount'],5900)
 
     async def test_finance_command_renders_usdt_and_historical_usd_separately(self):
         from datetime import datetime,timezone
@@ -191,7 +204,7 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         conn.fetch=AsyncMock(return_value=[
             {'moneda':'USD','monto':Decimal('4.50'),'cantidad':2,'concepto':'Anterior'},
             {'moneda':'USDT','monto':Decimal('4.50'),'cantidad':1,'concepto':'Diamante'},
-            {'moneda':'ARS','monto':4700,'cantidad':1,'concepto':'Diamante'}])
+            {'moneda':'ARS','monto':5900,'cantidad':1,'concepto':'Diamante'}])
         interaction=NS(response=NS(defer=AsyncMock()),followup=NS(send=AsyncMock()),created_at=datetime.now(timezone.utc))
         await Tickets.ver_finanzas.callback(cog,interaction,mes=10,ano=2026)
         embed=interaction.followup.send.await_args.kwargs['embed']

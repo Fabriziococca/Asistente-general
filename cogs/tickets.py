@@ -29,9 +29,9 @@ FABRIZIO_ID = 704501115110162542
 
 # Configuración de Roles y Precios estricta (Sin puntos como separador de miles)
 ROLES = {
-    "Diamante": {"id": 1423389000122499083, "ars": 4700, "usdt": 4.5},
-    "Oro": {"id": 1423389001984905248, "ars": 4200, "usdt": 4.0},
-    "Plata": {"id": 1478203883661820106, "ars": 2200, "usdt": 2.0}
+    "Diamante": {"id": 1423389000122499083, "ars": 5900, "usdt": 4.5},
+    "Oro": {"id": 1423389001984905248, "ars": 5300, "usdt": 4.0},
+    "Plata": {"id": 1478203883661820106, "ars": 2300, "usdt": 2.0}
 }
 
 class Tickets(commands.Cog):

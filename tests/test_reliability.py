@@ -33,7 +33,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
         cog.bot.fetch_channel=AsyncMock(side_effect=discord.NotFound(NS(status=404,reason='Not found'),'gone'))
         return cog,message,progress
 
-    async def save(self, message, amount=4700, currency='ARS', digest='one'):
+    async def save(self, message, amount=5900, currency='ARS', digest='one'):
         return await self.store.save(message,[Receipt(0,Decimal(amount),currency,
             'transferencia' if currency=='ARS' else 'binance',digest+'-operation')],[digest])
 
@@ -72,7 +72,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
     async def test_acknowledging_old_balance_does_not_hide_a_concurrent_new_payment(self):
         cog,message,_=self.bot()
         old=await self.save(message,5000)
-        await self.save(message,4700,digest='new')
+        await self.save(message,5900,digest='new')
         await self.store.pending_notified(-456,-123,[old[0]['pago_id']])
         self.assertFalse(await self.conn.fetchval("SELECT aviso_pendiente FROM pagos WHERE comprobante_hash='one'"))
         self.assertTrue(await self.conn.fetchval("SELECT aviso_pendiente FROM pagos WHERE comprobante_hash='new'"))
@@ -82,7 +82,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
         message.content='Diamante y Oro'
         message.attachments=[attachment(b'ars'),attachment(b'usdt')]
         cog._generate_content_with_rotation=AsyncMock(return_value=json.dumps({'comprobantes':[
-            reading(monto='4.700',metodo_pago='Mercado Pago'),
+            reading(monto='5.900',metodo_pago='Mercado Pago'),
             reading(1,monto='4',moneda='USDT',metodo_pago='binance',pay_id_destino='552346130')]}))
         await cog.on_message(message)
         expected={ROLES[name]['id'] for name in ('Diamante','Oro')}
@@ -90,7 +90,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.store.summary(-456,-123))['state'],'delivered')
         rows=await self.conn.fetch("SELECT moneda,monto,roles_asignados FROM pagos WHERE comprobante_hash IS NOT NULL ORDER BY pago_id")
         self.assertEqual([(r['moneda'],r['monto'],r['roles_asignados']) for r in rows],
-                         [('ARS',Decimal(4700),['Diamante']),('USDT',Decimal(4),['Oro'])])
+                         [('ARS',Decimal(5900),['Diamante']),('USDT',Decimal(4),['Oro'])])
         await cog.on_message(message)
         self.assertEqual(message.author.add_roles.await_count,2)
 
@@ -171,7 +171,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(3):
             await self.store.attempt(delivery['entrega_id'])
         await self.store.failed(delivery['entrega_id'],3)
-        await self.save(message,4200,digest='gold')
+        await self.save(message,5300,digest='gold')
         await self.store.remember(-456,-123,('Oro',))
         message.author.roles=[NS(id=ROLES['Diamante']['id'])]  # Entrega hecha por administración.
         await self.stale()
@@ -179,7 +179,7 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({r.id for r in message.author.roles},{ROLES['Diamante']['id'],ROLES['Oro']['id']})
         self.assertEqual((await self.store.summary(-456,-123))['state'],'delivered')
         message.author.add_roles.assert_awaited_once()
-        self.assertEqual(await self.conn.fetchval("SELECT sum(monto) FROM pagos WHERE comprobante_hash IS NOT NULL"),8900)
+        self.assertEqual(await self.conn.fetchval("SELECT sum(monto) FROM pagos WHERE comprobante_hash IS NOT NULL"),11200)
 
     async def test_one_broken_ticket_does_not_block_other_pending_purchases(self):
         cog,message,_=self.bot()
@@ -224,10 +224,10 @@ class ReliabilityTests(unittest.IsolatedAsyncioTestCase):
         message.author.add_roles.assert_not_awaited()
         await self.conn.execute("UPDATE ticket_inbox SET retry_at=CURRENT_TIMESTAMP-INTERVAL '1 second'")
         cog._generate_content_with_rotation=AsyncMock(return_value=json.dumps({'comprobantes':[
-            reading(monto=4200,numero_operacion='second-operation')]}))
+            reading(monto=5300,numero_operacion='second-operation')]}))
         await cog._process_inbox_message(message)
         self.assertEqual(len(cog._generate_content_with_rotation.await_args.args[1]),1)
         self.assertEqual((await self.store.summary(-456,-123))['state'],'delivered')
-        self.assertEqual(await self.conn.fetchval("SELECT sum(monto) FROM pagos WHERE comprobante_hash IS NOT NULL"),8900)
+        self.assertEqual(await self.conn.fetchval("SELECT sum(monto) FROM pagos WHERE comprobante_hash IS NOT NULL"),11200)
         self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE comprobante_hash IS NOT NULL"),2)
         message.author.add_roles.assert_awaited_once()

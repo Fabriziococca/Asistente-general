@@ -71,6 +71,21 @@ def replacement(message,suggestion=False):
     return {'content':content,'embeds':updated}
 
 
+def needs_refresh(message, suggestion=False):
+    """Detecta también bienvenidas con precios anteriores, sin reescribir ventas."""
+    body = message.get('content','') + json.dumps(message.get('embeds',[]),ensure_ascii=False)
+    if public_message_needs_refresh(body):
+        return True
+    if any('Zona de Compras' in (e.get('title') or '') or 'Petición Única' in (e.get('title') or '')
+           for e in message.get('embeds',[])):
+        expected = replacement(message,suggestion)
+        keys = ('title','description','color','fields','footer')
+        actual = [{k:e[k] for k in keys if k in e} for e in message.get('embeds',[])]
+        wanted = [{k:e[k] for k in keys if k in e} for e in expected['embeds']]
+        return message.get('content','') != expected['content'] or actual != wanted
+    return False
+
+
 def owner_replacement(content):
     lines=[]
     for line in content.splitlines():
@@ -133,7 +148,8 @@ def main():
             scanned+=len(messages)
             for message in messages:
                 body=message.get('content','')+json.dumps(message.get('embeds',[]),ensure_ascii=False)
-                if not public_message_needs_refresh(body):
+                suggestion=channel['name'].startswith('sug-') or channel.get('parent_id')=='1510095191275737088'
+                if not needs_refresh(message,suggestion):
                     continue
                 record={'channel_id':channel['id'],'message':message,
                         'url':f"https://discord.com/channels/{args.guild}/{channel['id']}/{message['id']}"}

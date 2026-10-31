@@ -64,8 +64,8 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def save_two(self):
         return await self.store.save(self.message,
-            [Receipt(0, Decimal(4700), 'ARS', 'transferencia', 'first-operation'),
-             Receipt(1, Decimal(6400), 'ARS', 'transferencia', 'second-operation')], ['hash-first','hash-second'])
+            [Receipt(0, Decimal(5900), 'ARS', 'transferencia', 'first-operation'),
+             Receipt(1, Decimal(7600), 'ARS', 'transferencia', 'second-operation')], ['hash-first','hash-second'])
 
     async def test_two_receipts_one_complete_delivery_and_exact_finances(self):
         await self.save_two()
@@ -75,7 +75,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.store.attempt(delivery['entrega_id'])
         await self.store.finish(delivery['entrega_id'],-456)
         rows = await self.conn.fetch("SELECT * FROM pagos WHERE comprobante_hash IS NOT NULL")
-        self.assertEqual(sum(row['monto'] for row in rows), 11100)
+        self.assertEqual(sum(row['monto'] for row in rows), 13500)
         self.assertTrue(all(row['entrega_estado']=='entregado' for row in rows))
         self.assertTrue((await self.store.prepare(-456,-123)).get('empty'))
 
@@ -92,14 +92,14 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         message.guild.id = -567
         message.attachments = [attachment(b'first image'), attachment(b'second image')]
         cog._generate_content_with_rotation = AsyncMock(return_value=json.dumps({'comprobantes': [
-            reading(), reading(1,6400,numero_operacion='E1792432948955Q')]}))
+            reading(), reading(1,7600,numero_operacion='E1792432948955Q')]}))
         async def assign(*roles, **kwargs):
             message.author.roles = list(roles)
         message.author.add_roles.side_effect = assign
         await cog.on_message(message)
         self.assertEqual(len(message.author.roles),3)
         self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE entrega_estado='entregado'"),2)
-        self.assertEqual(await self.conn.fetchval("SELECT sum(monto) FROM pagos WHERE entrega_estado='entregado'"),11100)
+        self.assertEqual(await self.conn.fetchval("SELECT sum(monto) FROM pagos WHERE entrega_estado='entregado'"),13500)
         await cog.on_message(message)
         self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE comprobante_hash IS NOT NULL"),2)
         message.author.add_roles.assert_awaited_once()
@@ -113,7 +113,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.save_two()
         await self.save_two()
         await self.store.save(self.message,
-            [Receipt(0,Decimal(4700),'ARS','transferencia','first-operation')], ['different-image'])
+            [Receipt(0,Decimal(5900),'ARS','transferencia','first-operation')], ['different-image'])
         self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE comprobante_hash IS NOT NULL"),2)
 
     async def test_retired_method_is_blocked_before_any_insert(self):
@@ -131,11 +131,11 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.conn.fetchval("SELECT monto FROM pagos WHERE moneda='USD'"),Decimal('4.50'))
 
     async def test_partial_then_second_message_and_restart(self):
-        await self.store.save(self.message,[Receipt(0,Decimal(4700),'ARS','transferencia',None)],['first'])
+        await self.store.save(self.message,[Receipt(0,Decimal(5900),'ARS','transferencia',None)],['first'])
         partial = await self.store.prepare(-456,-123,('Diamante','Oro','Plata'))
-        self.assertEqual(partial['missing'],6400)
+        self.assertEqual(partial['missing'],7600)
         restarted = PaymentStore(BoundConnection(self.conn))
-        await restarted.save(self.message,[Receipt(0,Decimal(6400),'ARS','transferencia',None)],['second'])
+        await restarted.save(self.message,[Receipt(0,Decimal(7600),'ARS','transferencia',None)],['second'])
         self.assertEqual((await restarted.prepare(-456,-123))['delivery']['roles_asignados'],['Diamante','Oro','Plata'])
 
     async def test_binance_followup_oro_keeps_original_diamante_and_oro(self):
@@ -302,7 +302,7 @@ class PaymentDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_currencies_are_not_added_together(self):
         await self.store.save(self.message,
-            [Receipt(0,Decimal(2200),'ARS','transferencia',None), Receipt(1,Decimal(2),'USDT','binance',None)], ['ars','usd'])
+            [Receipt(0,Decimal(2300),'ARS','transferencia',None), Receipt(1,Decimal(2),'USDT','binance',None)], ['ars','usd'])
         result=await self.store.prepare(-456,-123,('Diamante',))
         self.assertNotIn('delivery',result)
 

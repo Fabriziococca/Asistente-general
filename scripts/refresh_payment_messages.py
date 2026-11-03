@@ -39,6 +39,11 @@ def redacted(text):
     return text
 
 
+def ambiguous_campaign_methods(content):
+    return (campaign_active() and str(content).startswith('⚡ **PROMO PAYPAL') and
+            '**Transferencia ARS a CBU/CVU** o **PayPal en USD**.' in str(content))
+
+
 def replacement(message,suggestion=False):
     methods, details, prices, _ = payment_copy()
     embeds=message.get('embeds',[])
@@ -46,6 +51,9 @@ def replacement(message,suggestion=False):
         content,embed=ticket_welcome(suggestion)
         return {'content':content,'embeds':[embed.to_dict()]}
     content=message.get('content','')
+    if ambiguous_campaign_methods(content):
+        # Solo reemplaza el encabezado propio de oferta, conserva los datos y pasos.
+        content=methods+content.split('**Transferencia ARS a CBU/CVU** o **PayPal en USD**.',1)[1]
     if obsolete_payment_reference(content):
         if re.search(r'\b(registr\w*|entreg\w*|comprobante)\b',content,re.I):
             content=redacted(content)+'\n\n'+methods
@@ -79,6 +87,8 @@ def replacement(message,suggestion=False):
 def needs_refresh(message, suggestion=False):
     """Detecta también bienvenidas con precios anteriores, sin reescribir ventas."""
     body = message.get('content','') + json.dumps(message.get('embeds',[]),ensure_ascii=False)
+    if ambiguous_campaign_methods(message.get('content','')):
+        return True
     if public_message_needs_refresh(body):
         return True
     if any('Zona de Compras' in (e.get('title') or '') or 'Petición Única' in (e.get('title') or '')

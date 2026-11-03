@@ -134,13 +134,19 @@ class Tickets(commands.Cog):
         for _ in range(len(self.api_keys)):
             key_index = self.current_key_index
             genai.configure(api_key=self.api_keys[key_index])
-            for model_name in self.model_pool:
-                if self._cooldowns.get((key_index, model_name), 0) > time.monotonic():
+            # El chat prioriza el modelo comprobado más rápido; visión mantiene
+            # el orden 3.8/3.7/3.6 para conservar la prioridad de lectura.
+            models = self.model_pool if image_parts else sorted(
+                self.model_pool,key=lambda name:name != 'gemini-3.6-flash')
+            for model_name in models:
+                if max(self._cooldowns.get((key_index, model_name), 0),
+                       self._cooldowns.get(('service', model_name), 0)) > time.monotonic():
                     continue
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Presupuesto de respuesta agotado")
                 timeout = min(25 if image_parts else 12, remaining)
+                started = time.monotonic()
                 try:
                     model = genai.GenerativeModel(model_name)
                     options = {'request_options': {'timeout': timeout, 'retry': None}}
@@ -151,12 +157,17 @@ class Tickets(commands.Cog):
                     result = response.text.strip()
                     if not result:
                         raise ValueError("Respuesta vacía")
+                    print(f"[IA] {model_name} key={key_index} ok segundos={time.monotonic()-started:.1f}", flush=True)
                     return result
                 except Exception as exc:
                     kind = type(exc).__name__
                     cooldown = 60 if kind in ('ResourceExhausted','TooManyRequests') else 30
                     self._cooldowns[(key_index, model_name)] = time.monotonic() + cooldown
-                    print(f"[IA] {model_name} key={key_index} error={kind}; respaldo activado", flush=True)
+                    if kind == 'ServiceUnavailable':
+                        # Un 503 es indisponibilidad del modelo, no una clave inválida.
+                        # Evitar repetirlo con cada clave y cada mensaje del ticket.
+                        self._cooldowns[('service', model_name)] = time.monotonic() + 120
+                    print(f"[IA] {model_name} key={key_index} error={kind} segundos={time.monotonic()-started:.1f}; respaldo activado", flush=True)
             self.current_key_index = (key_index + 1) % len(self.api_keys)
         raise RuntimeError("La IA no está disponible temporalmente")
 

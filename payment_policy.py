@@ -50,8 +50,9 @@ NORMAL_PRICE_LIST = ('💎 Diamante: **$5.900 ARS / 5,50 USDT**\n'
               'Son permanentes y cada rango tiene su propio contenido; Diamante no incluye Oro ni Plata.')
 _local_end = CAMPAIGN_END.astimezone(timezone(timedelta(hours=-3)))
 CAMPAIGN_COPY = ('⚡ **PROMO PAYPAL · HASTA 65% OFF**\n'
-                 f'Hasta el {_local_end:%d/%m a las %H:%M} (hora argentina). También desde Argentina con saldo PayPal.')
-PAYMENT_METHODS = (CAMPAIGN_COPY + '\n**Transferencia ARS a CBU/CVU** o **PayPal en USD**.')
+                 f'Hasta el {_local_end:%d/%m a las %H:%M} (hora argentina). '
+                 'Exclusiva pagando por PayPal en USD, también desde Argentina. En ARS rige el precio normal.')
+PAYMENT_METHODS = (CAMPAIGN_COPY + '\n**Transferencia ARS a CBU/CVU (precio normal)** o **PayPal en USD (promo de rangos)**.')
 PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
                    f'\n\n**PayPal · USD (monto exacto)**\nCorreo: `{PAYPAL_EMAIL}`')
 PRICE_LIST = ('💎 Diamante: **$5.900 ARS / $2,00 USD** (~~$5,50 USD~~ · 64% OFF)\n'

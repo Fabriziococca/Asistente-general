@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, patch
 
 import discord
+from google.api_core.exceptions import ServiceUnavailable
 
 from communication import local_answer, message_chunks, send_response, author_label
 from test_tickets import fixture, Connection
@@ -191,6 +192,46 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'OK')
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'OK')
         self.assertEqual([call.args[0] for call in create.call_args_list],['first','second','second'])
+
+    async def test_service_outage_is_not_retried_with_another_key_until_cooldown_expires(self):
+        cog,_,_=fixture();cog.api_keys=['fake-one','fake-two'];cog.model_pool=['first','second']
+        down=NS(generate_content=lambda **kw: (_ for _ in ()).throw(ServiceUnavailable('overloaded')))
+        healthy=NS(generate_content=lambda **kw:NS(text='Respuesta útil'))
+        with patch('cogs.tickets.genai.configure'),patch('cogs.tickets.time.monotonic',return_value=100),patch(
+                'cogs.tickets.genai.GenerativeModel',side_effect=[down,healthy,healthy,healthy]) as create:
+            self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
+            cog.current_key_index=1
+            self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
+            with patch('cogs.tickets.time.monotonic',return_value=131):
+                self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
+        self.assertEqual([call.args[0] for call in create.call_args_list],['first','second','second','second'])
+        with patch('cogs.tickets.genai.configure'),patch('cogs.tickets.time.monotonic',return_value=221),patch(
+                'cogs.tickets.genai.GenerativeModel',return_value=healthy) as create:
+            self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
+        self.assertEqual(create.call_args.args[0],'first')
+
+    async def test_purchase_conversation_still_uses_gemini(self):
+        cog,_,message=fixture();message.content='Quiero adquirir el diamante'
+        message.channel.typing=lambda:Connection()
+        cog._generate_content_with_rotation=AsyncMock(return_value='Diamante cuesta $2,00 USD por PayPal o $5.900 ARS a precio normal.')
+        await cog.handle_support_query(message)
+        cog._generate_content_with_rotation.assert_awaited_once()
+        self.assertIn('$2,00 USD',message.reply.await_args.args[0])
+
+    async def test_chat_tries_fast_gemini_first_without_changing_vision_order(self):
+        cog,_,_=fixture();cog.api_keys=['fake']
+        model=NS(generate_content=lambda **kw:NS(text='OK'))
+        with patch('cogs.tickets.genai.configure'),patch('cogs.tickets.genai.GenerativeModel',return_value=model) as create:
+            await cog._generate_content_with_rotation('Compra de Diamante')
+            await cog._generate_content_with_rotation('Comprobante',[{'mime_type':'image/png','data':b'test'}])
+        self.assertEqual([call.args[0] for call in create.call_args_list],['gemini-3.6-flash','gemini-3.8-flash'])
+        self.assertEqual(cog.model_pool,['gemini-3.8-flash','gemini-3.7-flash','gemini-3.6-flash'])
+
+    def test_payment_instructions_limit_discount_to_paypal_and_keep_ars_at_normal_price(self):
+        for question in ('Lo paso por paypal','Pasame el CBU','como pago'):
+            answer=local_answer(question)
+            self.assertIn('Exclusiva pagando por PayPal en USD',answer)
+            self.assertIn('En ARS rige el precio normal',answer)
 
 
 from campaign_clock import freeze_campaign

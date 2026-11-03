@@ -225,6 +225,17 @@ class CampaignTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('Binance',result['content'])
         self.assertFalse(policy.public_message_needs_refresh(json.dumps(result)))
 
+    def test_refresh_clarifies_ambiguous_campaign_offer_without_replacing_payment_evidence(self):
+        tail='\n\n'+policy.PAYMENT_DETAILS+'\nDespués mandá el comprobante y los rangos que elegiste.'
+        old={'content':'⚡ **PROMO PAYPAL · HASTA 65% OFF**\nHasta el 09/11 a las 00:00.\n**Transferencia ARS a CBU/CVU** o **PayPal en USD**.'+tail,'embeds':[]}
+        self.assertTrue(needs_refresh(old))
+        new=replacement(old)
+        self.assertEqual(new['content'],policy.PAYMENT_METHODS+tail)
+        self.assertFalse(needs_refresh(new))
+        validate_replacement(new)
+        evidence={'content':'Comprobante registrado: 2.00 USD por PayPal.','embeds':[]}
+        self.assertEqual(replacement(evidence)['content'],evidence['content'])
+
 
 @unittest.skipUnless(os.environ.get('BOT_TEST_DATABASE_URL'),'PostgreSQL de prueba no configurado')
 class CampaignDatabaseTests(unittest.IsolatedAsyncioTestCase):

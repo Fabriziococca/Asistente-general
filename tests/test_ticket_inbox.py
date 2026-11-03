@@ -54,6 +54,28 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def make_retry_due(self, message):
         await self.conn.execute("UPDATE ticket_inbox SET retry_at=CURRENT_TIMESTAMP-INTERVAL '1 second' WHERE message_id=$1",message.id)
 
+    async def test_purchase_stays_with_gemini_and_paypal_followup_explains_normal_ars(self):
+        from test_tickets import Connection
+        cog,message,_=self.receipt_bot()
+        # Comprador nuevo: el fixture conserva un pago histórico de otro usuario.
+        await self.conn.execute("INSERT INTO usuarios VALUES(-124); INSERT INTO tickets(channel_id,user_id) VALUES(-457,-124)")
+        message.author.id=-124;message.channel.id=-457
+        message.attachments=[];message.content='Quiero adquirir el diamante'
+        message.channel.typing=lambda:Connection()
+        cog._generate_content_with_rotation=AsyncMock(return_value='Diamante: $2,00 USD por PayPal en promo o $5.900 ARS a precio normal.')
+        await cog.on_message(message)
+        cog._generate_content_with_rotation.assert_awaited_once()
+        self.assertIn('$2,00 USD',message.reply.await_args.args[0])
+        message.id+=1;message.content='Lo paso por paypal'
+        await cog.on_message(message)
+        cog._generate_content_with_rotation.assert_awaited_once()
+        self.assertIn('Exclusiva pagando por PayPal en USD',message.reply.await_args.args[0])
+        self.assertIn('En ARS rige el precio normal',message.reply.await_args.args[0])
+        self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM ticket_inbox WHERE state='done'"),2)
+        self.assertEqual(await self.conn.fetchval('SELECT rangos_solicitados FROM tickets WHERE channel_id=-457'),['Diamante'])
+        self.assertEqual(await self.conn.fetchval('SELECT count(*) FROM pagos'),1)
+        message.channel.send.assert_not_awaited()
+
     async def test_receipt_outage_then_rank_then_restart_delivers_once(self):
         cog,message,progress=self.receipt_bot()
         cog._generate_content_with_rotation=AsyncMock(side_effect=TimeoutError())

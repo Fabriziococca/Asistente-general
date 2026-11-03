@@ -2,8 +2,8 @@
 import json
 import os
 import unittest
-from datetime import timedelta
-from decimal import Decimal
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, patch
 
@@ -35,8 +35,8 @@ def parse(**changes):
 
 
 class CampaignTests(unittest.IsolatedAsyncioTestCase):
-    def test_exact_seven_day_window_and_end_excluded(self):
-        self.assertEqual(policy.CAMPAIGN_END-policy.CAMPAIGN_START,timedelta(days=7))
+    def test_extended_campaign_deadline_and_end_excluded(self):
+        self.assertEqual(policy.CAMPAIGN_END,datetime(2026,11,9,3,tzinfo=timezone.utc))
         self.assertFalse(policy.campaign_active(policy.CAMPAIGN_START-timedelta(microseconds=1)))
         self.assertTrue(policy.campaign_active(policy.CAMPAIGN_START))
         self.assertTrue(policy.campaign_active(policy.CAMPAIGN_END-timedelta(microseconds=1)))
@@ -50,6 +50,34 @@ class CampaignTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(split_purchase({'ARS':Decimal(5300),'USD':Decimal(2)},('Diamante','Oro')),
                          {'ARS':('Oro',),'USD':('Diamante',)})
         self.assertFalse(split_purchase({'ARS':Decimal(3000),'USD':Decimal(1)},('Diamante',)))
+
+    def test_permanent_international_prices_and_unchanged_ars_and_petitions(self):
+        self.assertEqual({name:prices['USDT'] for name,prices in policy.PRICES.items()},
+                         {'Diamante':Decimal('5.50'),'Oro':Decimal('5.00'),'Plata':Decimal('2.50')})
+        self.assertEqual(sum(prices['USDT'] for prices in policy.PRICES.values()),Decimal('13.00'))
+        self.assertEqual({name:prices['ARS'] for name,prices in policy.PRICES.items()},
+                         {'Diamante':Decimal('5900'),'Oro':Decimal('5300'),'Plata':Decimal('2300')})
+        self.assertEqual(policy.SUGGESTION_PRICES,{'ARS':Decimal(4000),'USDT':Decimal(4),'USD':Decimal(4)})
+        for name,prices in policy.PRICES.items():
+            self.assertEqual(choose_roles(prices['USDT'],'USDT',(name,)),((name,),Decimal(0)))
+            self.assertEqual(choose_roles(prices['USDT']-Decimal('0.01'),'USDT',(name,))[0],())
+        self.assertEqual(choose_roles(Decimal('13.00'),'USDT')[0],tuple(ROLES))
+
+    def test_promo_discounts_are_rounded_from_current_base_and_shown_once(self):
+        expected=[('Diamante','5,50','2,00',64),('Oro','5,00','1,75',65),('Plata','2,50','1,50',40)]
+        for role,base,promo,discount in expected:
+            prices=policy.PRICES[role]
+            actual=((1-prices['USD']/prices['USDT'])*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP)
+            self.assertEqual(actual,discount)
+            line=next(line for line in policy.PRICE_LIST.splitlines() if f'{role}:' in line)
+            self.assertIn(f'~~${base} USD~~',line)
+            self.assertIn(f'${promo} USD',line)
+            self.assertIn(f'{discount}% OFF',line)
+        base=sum(prices['USDT'] for prices in policy.PRICES.values())
+        promo=sum(prices['USD'] for prices in policy.PRICES.values())
+        self.assertEqual(((1-promo/base)*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP),60)
+        self.assertIn('~~$13,00 USD~~ · 60% OFF',policy.PRICE_LIST)
+        self.assertNotIn('50% OFF',policy.PRICE_LIST)
 
     def test_public_and_private_paypal_receipt_aliases_are_internal_only(self):
         for alias in (*policy.PAYPAL_RECIPIENT_ALIASES,'PAYPAL *fabrococca','Fabrizio Cocca Ducay'):
@@ -124,7 +152,9 @@ class CampaignTests(unittest.IsolatedAsyncioTestCase):
             content,embed=ticket_welcome(suggestion)
             body=content+json.dumps(embed.to_dict(),ensure_ascii=False)
             if not suggestion:
-                self.assertEqual(body.count('7 DÍAS'),1)
+                self.assertEqual(body.count('HASTA 65% OFF'),1)
+                self.assertIn('09/11 a las 00:00',body)
+                self.assertNotIn('7 DÍAS',body)
             self.assertIn(policy.PAYPAL_EMAIL,body)
             self.assertNotIn('Binance',body)
             self.assertFalse(policy.private_identity_reference(body))
@@ -140,7 +170,8 @@ class CampaignTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Binance',local_answer('datos de pago'))
             self.assertNotIn('PayPal',local_answer('precios'))
             self.assertIn('5.900',local_answer('precios'))
-            self.assertIn('4,50 USDT',local_answer('precios'))
+            for price in ('5,50 USDT','5,00 USDT','2,50 USDT','13,00 USDT'):
+                self.assertIn(price,local_answer('precios'))
             self.assertTrue(policy.recorded_payment({'moneda':'USD','metodo_pago':'paypal','politica_precio':policy.CAMPAIGN_ID}))
             self.assertFalse(parse()[0])
 
@@ -182,7 +213,8 @@ class CampaignTests(unittest.IsolatedAsyncioTestCase):
         prompt=cog._answer_with_acknowledgement.await_args.args[1]
         self.assertIn(policy.PAYPAL_EMAIL,prompt)
         self.assertIn('$5,25 USD',prompt)
-        self.assertIn('7 DÍAS',prompt)
+        self.assertIn('HASTA 65% OFF',prompt)
+        self.assertIn('09/11 a las 00:00',prompt)
         self.assertNotIn('Binance',prompt)
         self.assertNotIn('USDT',prompt)
         self.assertFalse(policy.private_identity_reference(prompt))
@@ -234,7 +266,7 @@ class CampaignDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_previously_registered_binance_delivery_continues_but_new_binance_is_blocked(self):
         with patch('payment_policy.campaign_active',return_value=False):
-            await self.store.save(self.message,[Receipt(0,Decimal('4.5'),'USDT','binance','old-payment')],['old'])
+            await self.store.save(self.message,[Receipt(0,Decimal('5.5'),'USDT','binance','old-payment')],['old'])
         await self.conn.execute("UPDATE pagos SET entrega_actualizada=CURRENT_TIMESTAMP-INTERVAL '4 minutes'")
         self.assertEqual(len(await self.store.pending_purchases()),1)
         delivery=(await self.store.prepare(-456,-123,('Diamante',)))['delivery']
@@ -244,6 +276,18 @@ class CampaignDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await cog._fulfill_delivery(delivery,message.channel,message.guild))
         with self.assertRaises(ValueError):
             await self.store.save(self.message,[Receipt(0,Decimal('4.5'),'USDT','binance',None)],['new'])
+
+    async def test_prepared_delivery_at_previous_price_keeps_amount_and_roles_after_increase(self):
+        old_price=dict(policy.PRICES['Diamante'],USDT=Decimal('4.50'))
+        with patch('payment_policy.campaign_active',return_value=False),patch.dict(policy.PRICES,Diamante=old_price):
+            await self.store.save(self.message,[Receipt(0,Decimal('4.50'),'USDT','binance','before-increase')],['old-price'])
+            prepared=(await self.store.prepare(-456,-123,('Diamante',)))['delivery']
+        cog,message=self.bot()
+        self.assertTrue(await cog._fulfill_delivery(prepared,message.channel,message.guild))
+        row=await self.conn.fetchrow("SELECT monto,roles_asignados,entrega_estado FROM pagos WHERE comprobante_hash='old-price'")
+        self.assertEqual(row['monto'],Decimal('4.50'))
+        self.assertEqual(row['roles_asignados'],['Diamante'])
+        self.assertEqual(row['entrega_estado'],'entregado')
 
     async def test_historical_paypal_without_campaign_marker_is_not_repriced(self):
         await self.conn.execute("""INSERT INTO pagos(user_id,ticket_id,monto,moneda,metodo_pago,entrega_estado,aviso_pendiente)

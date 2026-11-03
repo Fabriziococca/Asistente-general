@@ -18,7 +18,7 @@ PAYPAL_EMAIL = 'sesarjavier28@gmail.com'
 PAYPAL_RECIPIENT_ALIASES = (PAYPAL_EMAIL, 'fabrococca@gmail.com', 'fabrococca')
 CAMPAIGN_ID = 'paypal_flash_20261031'
 CAMPAIGN_START = datetime(2026, 10, 31, 3, 0, tzinfo=timezone.utc)
-CAMPAIGN_END = CAMPAIGN_START + timedelta(days=7)
+CAMPAIGN_END = datetime(2026, 11, 9, 3, 0, tzinfo=timezone.utc)
 
 
 def utc_now():
@@ -30,9 +30,9 @@ def campaign_active(now=None):
     return CAMPAIGN_START <= now < CAMPAIGN_END
 
 PRICES = {
-    'Diamante': {'ARS': Decimal('5900'), 'USDT': Decimal('4.5'), 'USD': Decimal('2.00')},
-    'Oro': {'ARS': Decimal('5300'), 'USDT': Decimal('4'), 'USD': Decimal('1.75')},
-    'Plata': {'ARS': Decimal('2300'), 'USDT': Decimal('2'), 'USD': Decimal('1.50')},
+    'Diamante': {'ARS': Decimal('5900'), 'USDT': Decimal('5.50'), 'USD': Decimal('2.00')},
+    'Oro': {'ARS': Decimal('5300'), 'USDT': Decimal('5.00'), 'USD': Decimal('1.75')},
+    'Plata': {'ARS': Decimal('2300'), 'USDT': Decimal('2.50'), 'USD': Decimal('1.50')},
 }
 SUGGESTION_PRICES = {'ARS': Decimal('4000'), 'USDT': Decimal('4'), 'USD': Decimal('4')}
 NORMAL_METHODS = {'ARS': 'transferencia', 'USDT': 'binance'}
@@ -44,20 +44,20 @@ BINANCE_DETAILS = f'**Binance Pay · USDT**\nPay ID: `{BINANCE_PAY_ID}`\nEnviá 
 NORMAL_PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
                    '\n\n' + BINANCE_DETAILS)
 NORMAL_PAYMENT_METHODS = 'Solo aceptamos **transferencia en pesos argentinos a CBU/CVU** o **USDT por Binance Pay**.'
-NORMAL_PRICE_LIST = ('💎 Diamante: **$5.900 ARS / 4,50 USDT**\n'
-              '🥇 Oro: **$5.300 ARS / 4 USDT**\n🥈 Plata: **$2.300 ARS / 2 USDT**\n'
-              'Los tres: **$13.500 ARS / 10,50 USDT**.\n'
+NORMAL_PRICE_LIST = ('💎 Diamante: **$5.900 ARS / 5,50 USDT**\n'
+              '🥇 Oro: **$5.300 ARS / 5,00 USDT**\n🥈 Plata: **$2.300 ARS / 2,50 USDT**\n'
+              'Los tres: **$13.500 ARS / 13,00 USDT**.\n'
               'Son permanentes y cada rango tiene su propio contenido; Diamante no incluye Oro ni Plata.')
 _local_end = CAMPAIGN_END.astimezone(timezone(timedelta(hours=-3)))
-CAMPAIGN_COPY = ('⚡ **PROMO PAYPAL · 7 DÍAS**\n'
+CAMPAIGN_COPY = ('⚡ **PROMO PAYPAL · HASTA 65% OFF**\n'
                  f'Hasta el {_local_end:%d/%m a las %H:%M} (hora argentina). También desde Argentina con saldo PayPal.')
 PAYMENT_METHODS = (CAMPAIGN_COPY + '\n**Transferencia ARS a CBU/CVU** o **PayPal en USD**.')
 PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
                    f'\n\n**PayPal · USD (monto exacto)**\nCorreo: `{PAYPAL_EMAIL}`')
-PRICE_LIST = ('💎 Diamante: **$5.900 ARS / $2,00 USD**\n'
-              '🥇 Oro: **$5.300 ARS / $1,75 USD**\n'
-              '🥈 Plata: **$2.300 ARS / $1,50 USD**\n'
-              '🔥 Los tres: **$13.500 ARS / $5,25 USD** (50% OFF en USD).\n\n'
+PRICE_LIST = ('💎 Diamante: **$5.900 ARS / $2,00 USD** (~~$5,50 USD~~ · 64% OFF)\n'
+              '🥇 Oro: **$5.300 ARS / $1,75 USD** (~~$5,00 USD~~ · 65% OFF)\n'
+              '🥈 Plata: **$2.300 ARS / $1,50 USD** (~~$2,50 USD~~ · 40% OFF)\n'
+              '🔥 Los tres: **$13.500 ARS / $5,25 USD** (~~$13,00 USD~~ · 60% OFF).\n\n'
               + CAMPAIGN_COPY + '\n'
               'Rangos permanentes, cada uno con su contenido. Diamante no incluye Oro ni Plata.')
 

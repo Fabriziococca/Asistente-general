@@ -93,7 +93,7 @@ def owner_replacement(content):
         tail = re.search(r'[^\n]*(?:DEMOSTRACIÓN|DEMOSTRACION|GUÍAS|GUIAS)[\s\S]*',content)
         return announcement_text() + ('\n\n' + redacted(tail[0]) if tail else '')
     retired = r'\bbinance(?:\s+pay)?(?:\s*\(?USDT\)?)?\b' if campaign_active() else r'\bpay[\W_]*pal\b'
-    current = 'PayPal en USD (promo de rangos por 7 días; consultá el ticket)' if campaign_active() else 'Binance Pay en USDT'
+    current = 'PayPal en USD (promo de rangos; consultá el ticket)' if campaign_active() else 'Binance Pay en USDT'
     return redacted(re.sub(retired,current,content,flags=re.I))
 
 

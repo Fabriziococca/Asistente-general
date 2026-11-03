@@ -124,7 +124,7 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
     @patch('payment_policy.campaign_active', return_value=False)
     def test_binance_id_allows_changed_nickname(self, _normal):
         receipts,issues=parse_receipts(json.dumps({'comprobantes':[
-            reading(monto='4.50',moneda='USDT',metodo_pago='binance',
+            reading(monto='5.50',moneda='USDT',metodo_pago='binance',
                     destinatario='UnApodoNuevo',pay_id_destino=BINANCE_PAY_ID)]}),1)
         self.assertFalse(issues)
         self.assertEqual(choose_roles(receipts[0].amount,'USDT')[0],('Diamante',))

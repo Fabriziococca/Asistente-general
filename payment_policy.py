@@ -1,7 +1,6 @@
 """Medios de cobro vigentes y contexto interno del destinatario."""
 
 from decimal import Decimal
-from datetime import datetime, timedelta, timezone
 import re
 import unicodedata
 
@@ -13,61 +12,33 @@ BANK_ALIAS = 'LENGUA.LUJOSA.TELAR'
 BINANCE_PAY_ID = '552346130'
 # Solo ayuda a leer comprobantes que no muestran el ID. No se publica como dato de cobro.
 BINANCE_RECIPIENT_ALIASES = ('fabrococca',)
-PAYPAL_EMAIL = 'sesarjavier28@gmail.com'
-# Solo lectura interna. Nunca se ofrecen como destino de cobro público.
-PAYPAL_RECIPIENT_ALIASES = (PAYPAL_EMAIL, 'fabrococca@gmail.com', 'fabrococca')
-CAMPAIGN_ID = 'paypal_flash_20261031'
-CAMPAIGN_START = datetime(2026, 10, 31, 3, 0, tzinfo=timezone.utc)
-CAMPAIGN_END = datetime(2026, 11, 9, 3, 0, tzinfo=timezone.utc)
-
-
-def utc_now():
-    return datetime.now(timezone.utc)
+CAMPAIGN_ID = 'paypal_flash_20261031'  # Marca histórica, nunca se aplica a pagos nuevos.
 
 
 def campaign_active(now=None):
-    now = now or utc_now()
-    return CAMPAIGN_START <= now < CAMPAIGN_END
+    return False
+
 
 PRICES = {
-    'Diamante': {'ARS': Decimal('5900'), 'USDT': Decimal('5.50'), 'USD': Decimal('2.00')},
-    'Oro': {'ARS': Decimal('5300'), 'USDT': Decimal('5.00'), 'USD': Decimal('1.75')},
-    'Plata': {'ARS': Decimal('2300'), 'USDT': Decimal('2.50'), 'USD': Decimal('1.50')},
+    'Diamante': {'ARS': Decimal('5900'), 'USDT': Decimal('5.50')},
+    'Oro': {'ARS': Decimal('5300'), 'USDT': Decimal('5.00')},
+    'Plata': {'ARS': Decimal('2300'), 'USDT': Decimal('2.50')},
 }
-SUGGESTION_PRICES = {'ARS': Decimal('4000'), 'USDT': Decimal('4'), 'USD': Decimal('4')}
+SUGGESTION_PRICES = {'ARS': Decimal('4000'), 'USDT': Decimal('4')}
 NORMAL_METHODS = {'ARS': 'transferencia', 'USDT': 'binance'}
-CURRENT_METHODS = {'ARS': 'transferencia', 'USD': 'paypal'}
 LEGACY_BANK_METHODS = {'transferencia', 'mercadopago', 'uala', 'otro', None}
 
 BANK_DETAILS = f'Alias: `{BANK_ALIAS}`\nCBU/CVU: `{BANK_ACCOUNT}`'
 BINANCE_DETAILS = f'**Binance Pay · USDT**\nPay ID: `{BINANCE_PAY_ID}`\nEnviá USDT por Binance Pay al ID indicado.'
-NORMAL_PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
+PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
                    '\n\n' + BINANCE_DETAILS)
-NORMAL_PAYMENT_METHODS = 'Solo aceptamos **transferencia en pesos argentinos a CBU/CVU** o **USDT por Binance Pay**.'
-NORMAL_PRICE_LIST = ('💎 Diamante: **$5.900 ARS / 5,50 USDT**\n'
+PAYMENT_METHODS = 'Solo aceptamos **transferencia en pesos argentinos a CBU/CVU** o **USDT por Binance Pay**.'
+PRICE_LIST = ('💎 Diamante: **$5.900 ARS / 5,50 USDT**\n'
               '🥇 Oro: **$5.300 ARS / 5,00 USDT**\n🥈 Plata: **$2.300 ARS / 2,50 USDT**\n'
               'Los tres: **$13.500 ARS / 13,00 USDT**.\n'
               'Son permanentes y cada rango tiene su propio contenido; Diamante no incluye Oro ni Plata.')
-_local_end = CAMPAIGN_END.astimezone(timezone(timedelta(hours=-3)))
-CAMPAIGN_COPY = ('⚡ **PROMO PAYPAL · HASTA 65% OFF**\n'
-                 f'Hasta el {_local_end:%d/%m a las %H:%M} (hora argentina). '
-                 'Exclusiva pagando por PayPal en USD, también desde Argentina. En ARS rige el precio normal.')
-PAYMENT_METHODS = (CAMPAIGN_COPY + '\n**Transferencia ARS a CBU/CVU (precio normal)** o **PayPal en USD (promo de rangos)**.')
-PAYMENT_DETAILS = ('**Pesos argentinos · transferencia a CBU/CVU**\n' + BANK_DETAILS +
-                   f'\n\n**PayPal · USD (monto exacto)**\nCorreo: `{PAYPAL_EMAIL}`')
-PRICE_LIST = ('💎 Diamante: **$5.900 ARS / $2,00 USD** (~~$5,50 USD~~ · 64% OFF)\n'
-              '🥇 Oro: **$5.300 ARS / $1,75 USD** (~~$5,00 USD~~ · 65% OFF)\n'
-              '🥈 Plata: **$2.300 ARS / $1,50 USD** (~~$2,50 USD~~ · 40% OFF)\n'
-              '🔥 Los tres: **$13.500 ARS / $5,25 USD** (~~$13,00 USD~~ · 60% OFF).\n\n'
-              + CAMPAIGN_COPY + '\n'
-              'Rangos permanentes, cada uno con su contenido. Diamante no incluye Oro ni Plata.')
-
-
 def payment_copy():
-    """Se consulta en cada respuesta: el vencimiento no depende de reiniciar Render."""
-    if campaign_active():
-        return PAYMENT_METHODS, PAYMENT_DETAILS, PRICE_LIST, '$4.000 ARS / $4,00 USD por PayPal'
-    return NORMAL_PAYMENT_METHODS, NORMAL_PAYMENT_DETAILS, NORMAL_PRICE_LIST, '$4.000 ARS / 4 USDT'
+    return PAYMENT_METHODS, PAYMENT_DETAILS, PRICE_LIST, '$4.000 ARS / 4 USDT'
 
 
 def announcement_text():
@@ -81,7 +52,7 @@ def announcement_text():
 def current_payment(currency, method, *, legacy_bank=False):
     currency = str(currency or '').upper()
     method = str(method).lower() if method is not None else None
-    methods = CURRENT_METHODS if campaign_active() else NORMAL_METHODS
+    methods = NORMAL_METHODS
     return (method == methods.get(currency) and currency in methods) or (
         legacy_bank and currency == 'ARS' and method in LEGACY_BANK_METHODS)
 
@@ -94,17 +65,14 @@ def recorded_payment(row):
             (currency == 'USD' and method == 'paypal' and row.get('politica_precio') == CAMPAIGN_ID))
 
 
+RETIRED_PAYMENT_PATTERN = r'\bpay[\W_]*pal\b'
+EMAIL_PATTERN = r'[\w.+-]+@[\w.-]+\.[a-z]{2,}'
+
+
 def obsolete_payment_reference(text):
-    # Guardia de salida/contexto: las instrucciones anteriores no vuelven a publicarse.
+    """Oculta ofertas anteriores y correos de la memoria y las respuestas."""
     text = str(text)
-    if any(email.casefold() != PAYPAL_EMAIL or not campaign_active()
-           for email in re.findall(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}',text,re.I)):
-        return True
-    retired = r'\bbinance\b|552346130' if campaign_active() else r'\bpay[\W_]*pal\b'
-    if campaign_active() and re.search(r'\busdt\b',text,re.I) and not re.search(
-            r'\b(registr\w*|entreg\w*|comprobante)\b',text,re.I):
-        return True
-    return bool(re.search(retired,text,re.I))
+    return bool(re.search(RETIRED_PAYMENT_PATTERN, text, re.I) or re.search(EMAIL_PATTERN, text, re.I))
 
 
 def identity_text(text):
@@ -127,7 +95,7 @@ def bank_holder_query(text):
         return False
     if re.search(r'\b(binance|usdt|pay\s*pal|usd|dolares|correo)\b', text) and not re.search(bank_words, text):
         return False
-    if campaign_active() and not re.search(bank_words, text):
+    if obsolete_payment_reference(raw) or not re.search(bank_words, text):
         return False
     holder = re.search(r'\btitular\b', text) and (
         '?' in raw or re.search(r'\b(quien|cual|como|confirma\w*|deci\w*|indic\w*|pasa\w*)\b', text)
@@ -155,7 +123,5 @@ def safe_payment_response(text, *, allow_bank_holder=False):
         return methods + '\n\n' + details
     # El antiguo apodo tampoco se ofrece como dato de cobro al confirmar el titular bancario.
     if set(identity_text(text).split()).intersection(BINANCE_RECIPIENT_ALIASES):
-        return methods + '\n\n' + details
-    if private_identity_reference(text) and re.search(r'\bpay[\W_]*pal\b',str(text),re.I):
         return methods + '\n\n' + details
     return str(text)

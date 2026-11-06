@@ -21,8 +21,7 @@ def local_answer(content, *, suggestion=False, purchase=None):
     if suggestion:
         if obsolete_payment_reference(content) or re.search(PAYMENT_QUERY, text) or re.search(r'\b(pagar|pago|precios?|cuanto|cuesta|cuestan|valor)\b', text):
             return (f"La petición cuesta **{suggestion_prices}**. Primero mandá la plataforma de contenido "
-                    "y su red social; esperá la confirmación de disponibilidad de administración antes de pagar. "
-                    "El megadescuento de rangos no aplica a peticiones. " + methods)
+                    "y su red social; esperá la confirmación de disponibilidad de administración antes de pagar. " + methods)
         if re.fullmatch(r'(hola|buenas|buen dia|buenas tardes|buenas noches)( bot)?', text):
             return "¡Hola! Mandame la plataforma de contenido y la red social de la modelo que querés pedir. Administración revisará si está disponible."
         return None

@@ -17,18 +17,15 @@ sys.path.insert(0,str(ROOT))
 import requests
 from dotenv import dotenv_values
 
-from payment_policy import (payment_copy, announcement_text, BANK_HOLDER, PAYPAL_EMAIL, campaign_active,
+from payment_policy import (payment_copy, announcement_text, BANK_HOLDER, RETIRED_PAYMENT_PATTERN, EMAIL_PATTERN,
                             BINANCE_RECIPIENT_ALIASES, obsolete_payment_reference,
                             private_identity_reference, public_message_needs_refresh)
 from ticket_messages import ticket_welcome, welcome_needs_refresh
 
 
 def redacted(text):
-    retired = r'\bbinance(?:\s+pay)?\b|552346130' if campaign_active() else r'\bpay[\W_]*pal\b'
-    text=re.sub(retired,'medio anterior (retirado)',str(text),flags=re.I)
-    text=re.sub(r'[\w.+-]+@[\w.-]+\.[a-z]{2,}',
-        lambda match: match[0] if campaign_active() and match[0].casefold()==PAYPAL_EMAIL
-        else '[dato de cobro retirado]',text,flags=re.I)
+    text=re.sub(RETIRED_PAYMENT_PATTERN,'medio anterior (retirado)',str(text),flags=re.I)
+    text=re.sub(EMAIL_PATTERN,'[dato de cobro retirado]',text,flags=re.I)
     text=re.sub(r'@(everyone|here)\b','',text,flags=re.I)
     if private_identity_reference(text):
         names=[BANK_HOLDER, BANK_HOLDER.split()[0]+' '+BANK_HOLDER.split()[-2],
@@ -39,11 +36,6 @@ def redacted(text):
     return text
 
 
-def ambiguous_campaign_methods(content):
-    return (campaign_active() and str(content).startswith('⚡ **PROMO PAYPAL') and
-            '**Transferencia ARS a CBU/CVU** o **PayPal en USD**.' in str(content))
-
-
 def replacement(message,suggestion=False):
     methods, details, prices, _ = payment_copy()
     embeds=message.get('embeds',[])
@@ -51,12 +43,9 @@ def replacement(message,suggestion=False):
         content,embed=ticket_welcome(suggestion)
         return {'content':content,'embeds':[embed.to_dict()]}
     content=message.get('content','')
-    if ambiguous_campaign_methods(content):
-        # Solo reemplaza el encabezado propio de oferta, conserva los datos y pasos.
-        content=methods+content.split('**Transferencia ARS a CBU/CVU** o **PayPal en USD**.',1)[1]
     if obsolete_payment_reference(content):
-        if re.search(r'\b(registr\w*|entreg\w*|comprobante)\b',content,re.I):
-            content=redacted(content)+'\n\n'+methods
+        if re.match(r'^[✅\s*]*(?:(?:comprobante|pago) (?:ya )?registrad[oa]|registré|guardé|entrega completada)\b',content,re.I):
+            content=redacted(content)
         else:
             content=methods+'\n\n'+details
     elif private_identity_reference(content):
@@ -87,8 +76,6 @@ def replacement(message,suggestion=False):
 def needs_refresh(message, suggestion=False):
     """Detecta también bienvenidas con precios anteriores, sin reescribir ventas."""
     body = message.get('content','') + json.dumps(message.get('embeds',[]),ensure_ascii=False)
-    if ambiguous_campaign_methods(message.get('content','')):
-        return True
     if public_message_needs_refresh(body):
         return True
     if any('Zona de Compras' in (e.get('title') or '') or 'Petición Única' in (e.get('title') or '')
@@ -102,9 +89,8 @@ def owner_replacement(content):
     if 'ADQUIRIR RANGOS' in content or re.search(r'Rango\s+<@&\d+>',content,re.I):
         tail = re.search(r'[^\n]*(?:DEMOSTRACIÓN|DEMOSTRACION|GUÍAS|GUIAS)[\s\S]*',content)
         return announcement_text() + ('\n\n' + redacted(tail[0]) if tail else '')
-    retired = r'\bbinance(?:\s+pay)?(?:\s*\(?USDT\)?)?\b' if campaign_active() else r'\bpay[\W_]*pal\b'
-    current = 'PayPal en USD (promo de rangos; consultá el ticket)' if campaign_active() else 'Binance Pay en USDT'
-    return redacted(re.sub(retired,current,content,flags=re.I))
+
+    return redacted(re.sub(RETIRED_PAYMENT_PATTERN,'Binance Pay en USDT',content,flags=re.I))
 
 
 def validate_replacement(payload):

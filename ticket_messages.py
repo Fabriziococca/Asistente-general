@@ -21,8 +21,7 @@ def ticket_welcome(suggestion=False):
         embed.add_field(name='📋 PROCESO DE PRE-COMPRA', value=(
             '1. **Enviá la plataforma de contenido y su red social principal**.\n'
             '2. **Aguardá a que administración confirme** la disponibilidad en este chat.\n'
-            f'3. **Una vez confirmado**, realizá el pago ({suggestion_prices}) y subí el comprobante. '
-            'El megadescuento de rangos no aplica a peticiones.'), inline=False)
+            f'3. **Una vez confirmado**, realizá el pago ({suggestion_prices}) y subí el comprobante.'), inline=False)
         embed.add_field(name='💰 DATOS DE PAGO (Pagar solo tras confirmación)',
             value=details, inline=False)
         embed.add_field(name='⚠️ COMPROMISO DE COMPRA (100%)', value=(

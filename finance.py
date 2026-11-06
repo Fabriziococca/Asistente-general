@@ -3,7 +3,7 @@
 from decimal import Decimal
 
 
-CURRENCY_LABELS={'ARS':'Pesos (ARS)','USDT':'USDT registrados','USD':'USD · PayPal e históricos'}
+CURRENCY_LABELS={'ARS':'Pesos (ARS)','USDT':'USDT registrados','USD':'USD históricos'}
 
 
 def financial_totals(rows):

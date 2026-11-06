@@ -15,16 +15,6 @@ from test_tickets import fixture, delivery, attachment
 from test_receipts import reading
 import test_payment_store as payment_fixtures
 import test_ticket_inbox as inbox_fixtures
-from campaign_clock import freeze_campaign
-
-
-def setUpModule():
-    global _clock
-    _clock=freeze_campaign();_clock.start()
-
-
-def tearDownModule():
-    _clock.stop()
 
 
 def absent_member():

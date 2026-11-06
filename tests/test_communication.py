@@ -213,10 +213,10 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_purchase_conversation_still_uses_gemini(self):
         cog,_,message=fixture();message.content='Quiero adquirir el diamante'
         message.channel.typing=lambda:Connection()
-        cog._generate_content_with_rotation=AsyncMock(return_value='Diamante cuesta $2,00 USD por PayPal o $5.900 ARS a precio normal.')
+        cog._generate_content_with_rotation=AsyncMock(return_value='Diamante cuesta 5,50 USDT por Binance Pay o $5.900 ARS.')
         await cog.handle_support_query(message)
         cog._generate_content_with_rotation.assert_awaited_once()
-        self.assertIn('$2,00 USD',message.reply.await_args.args[0])
+        self.assertIn('5,50 USDT',message.reply.await_args.args[0])
 
     async def test_chat_tries_fast_gemini_first_without_changing_vision_order(self):
         cog,_,_=fixture();cog.api_keys=['fake']
@@ -227,19 +227,9 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in create.call_args_list],['gemini-3.6-flash','gemini-3.8-flash'])
         self.assertEqual(cog.model_pool,['gemini-3.8-flash','gemini-3.7-flash','gemini-3.6-flash'])
 
-    def test_payment_instructions_limit_discount_to_paypal_and_keep_ars_at_normal_price(self):
+    def test_payment_instructions_offer_only_current_methods(self):
         for question in ('Lo paso por paypal','Pasame el CBU','como pago'):
             answer=local_answer(question)
-            self.assertIn('Exclusiva pagando por PayPal en USD',answer)
-            self.assertIn('En ARS rige el precio normal',answer)
-
-
-from campaign_clock import freeze_campaign
-
-def setUpModule():
-    global _campaign_clock
-    _campaign_clock = freeze_campaign()
-    _campaign_clock.start()
-
-def tearDownModule():
-    _campaign_clock.stop()
+            self.assertIn('Binance Pay',answer)
+            self.assertIn('transferencia en pesos',answer)
+            self.assertNotIn('PayPal',answer)

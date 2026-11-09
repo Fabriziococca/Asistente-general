@@ -54,6 +54,54 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def make_retry_due(self, message):
         await self.conn.execute("UPDATE ticket_inbox SET retry_at=CURRENT_TIMESTAMP-INTERVAL '1 second' WHERE message_id=$1",message.id)
 
+    async def test_provider_outage_remains_recoverable_until_reading_returns(self):
+        cog, message, _ = self.receipt_bot()
+        cog._generate_content_with_rotation = AsyncMock(side_effect=RuntimeError('provider unavailable'))
+        for attempt in range(1, 5):
+            await cog.on_message(message)
+            job = await self.conn.fetchrow('SELECT state,attempts,error_type FROM ticket_inbox WHERE message_id=1000')
+            self.assertEqual((job['state'], job['attempts'], job['error_type']),
+                             ('pending', attempt, 'ReceiptProcessingUnavailable'))
+            await self.make_retry_due(message)
+        cog._generate_content_with_rotation = AsyncMock(return_value=self.receipt_reading())
+        await cog.on_message(message)
+        self.assertEqual(await self.conn.fetchval('SELECT state FROM ticket_inbox WHERE message_id=1000'), 'done')
+        self.assertEqual(await self.conn.fetchval("SELECT count(*) FROM pagos WHERE entrega_estado='entregado'"), 1)
+        message.author.add_roles.assert_awaited_once()
+
+    async def test_real_local_ocr_to_database_and_roles_while_gemini_is_down(self):
+        import io
+        from PIL import Image, ImageDraw, ImageFont
+        from cogs.tickets import Tickets
+        from payment_policy import BANK_ACCOUNT
+        from test_tickets import attachment
+
+        cog, message, _ = self.receipt_bot()
+        message.content = 'Los tres rangos'
+        message.attachments = []
+        for amount, operation in [(5900, '11001122'), (7600, '33003344')]:
+            image = Image.new('RGB', (1400, 600), 'white')
+            draw = ImageDraw.Draw(image)
+            draw.multiline_text((40, 40), f'Comprobante de Transferencia\n\nImporte debitado $ {amount},00\n\n'
+                                f'Cuenta destino {BANK_ACCOUNT}\n\nNumero de comprobante {operation}',
+                                fill='black', font=ImageFont.load_default(size=30), spacing=10)
+            data = io.BytesIO()
+            image.save(data, format='PNG')
+            message.attachments.append(attachment(data.getvalue()))
+            image.close()
+        cog._generate_content_with_rotation = AsyncMock(side_effect=RuntimeError('provider unavailable'))
+        cog._read_local_receipts = Tickets._read_local_receipts.__get__(cog)
+        await cog.on_message(message)
+        rows = await self.conn.fetch('SELECT monto,entrega_estado FROM pagos WHERE comprobante_hash IS NOT NULL')
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum(row['monto'] for row in rows), 13500)
+        self.assertTrue(all(row['entrega_estado'] == 'entregado' for row in rows))
+        self.assertEqual(len(message.author.roles), 3)
+        self.assertEqual(await self.conn.fetchval('SELECT state FROM ticket_inbox WHERE message_id=1000'), 'done')
+        await cog.on_message(message)
+        self.assertEqual(await self.conn.fetchval('SELECT count(*) FROM pagos WHERE comprobante_hash IS NOT NULL'), 2)
+        message.author.add_roles.assert_awaited_once()
+
     async def test_purchase_stays_with_gemini_and_retired_method_redirects_to_current_options(self):
         from test_tickets import Connection
         cog,message,_=self.receipt_bot()
@@ -81,7 +129,7 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
         cog._generate_content_with_rotation=AsyncMock(side_effect=TimeoutError())
         await cog.on_message(message)
         job=await self.conn.fetchrow('SELECT * FROM ticket_inbox WHERE message_id=1000')
-        self.assertEqual((job['state'],job['attempts'],job['error_type']),('pending',1,'TimeoutError'))
+        self.assertEqual((job['state'],job['attempts'],job['error_type']),('pending',1,'ReceiptProcessingUnavailable'))
         self.assertTrue(job['is_receipt'])
         self.assertIsNotNone(job['reply_id'])
         warning_id=job['reply_id']
@@ -136,12 +184,12 @@ class InboxDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_three_failed_receipt_attempts_end_in_visible_manual_state(self):
         cog,message,progress=self.receipt_bot()
-        cog._generate_content_with_rotation=AsyncMock(side_effect=TimeoutError())
+        cog._generate_content_with_rotation=AsyncMock(return_value='{"comprobantes":[]}')
         for attempt in range(3):
             await cog.on_message(message)
             await self.make_retry_due(message)
         job=await self.conn.fetchrow('SELECT * FROM ticket_inbox WHERE message_id=1000')
-        self.assertEqual((job['state'],job['attempts'],job['error_type']),('manual',3,'TimeoutError'))
+        self.assertEqual((job['state'],job['attempts'],job['error_type']),('manual',3,'IncompleteReceiptReading'))
         self.assertEqual(await self.inbox.receipt_status(-456,-123),'manual')
         self.assertEqual(await self.inbox.pending(),[])
         await cog.on_message(message)

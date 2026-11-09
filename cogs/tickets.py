@@ -21,6 +21,7 @@ from ticket_inbox import TicketInbox, ReceiptReviewRequired, MAX_RECEIPT_ATTEMPT
 from ticket_messages import ticket_welcome, welcome_needs_refresh
 from payment_policy import SUGGESTION_PRICES, recorded_payment, payment_context, payment_copy
 from finance import CURRENCY_LABELS, financial_totals
+from receipt_ocr import read_receipts as local_receipt_reading, verify_model, ReceiptProcessingUnavailable
 
 # --- CONFIGURACIÓN DE NEGOCIO AND ACCESO HIGH-LEVEL ---
 ID_CATEGORIA_SUGERENCIAS = 1510095191275737088
@@ -40,6 +41,7 @@ class Tickets(commands.Cog):
         self.payments = PaymentStore(bot.pool)
         self._ticket_locks = weakref.WeakValueDictionary()
         self._ai_lock = asyncio.Lock()
+        self._ocr_lock = asyncio.Lock()
         self.inbox = TicketInbox(bot.pool)
         self._recovery_floor = 0
         self._scan_offset = 0
@@ -103,6 +105,8 @@ class Tickets(commands.Cog):
 
         await self.payments.initialize()
         started = await self.inbox.initialize()
+        await asyncio.to_thread(verify_model)
+        print('[OCR] Respaldo local disponible', flush=True)
         self._recovery_floor = discord.utils.time_snowflake(started)
         # Iniciar limpieza y recuperación de tickets.
         self.cleanup_tickets.start()
@@ -118,7 +122,7 @@ class Tickets(commands.Cog):
     # --- OMNI-PROTOCOLO SELECCIÓN Y ROTACIÓN HÍBRIDA DE CAPA GRATUITA ---
     async def _generate_content_with_rotation(self, prompt, image_parts=None):
         # El presupuesto incluye la espera por el SDK global, no solo la llamada HTTP.
-        budget = 90 if image_parts else 35
+        budget = 45 if image_parts else 35
         deadline = time.monotonic() + budget
         async with asyncio.timeout(budget):
             async with self._ai_lock:
@@ -127,7 +131,7 @@ class Tickets(commands.Cog):
     async def _generate_content(self, prompt, image_parts=None, deadline=None):
         if not self.api_keys:
             raise RuntimeError("No hay claves Gemini disponibles")
-        deadline = deadline or time.monotonic() + (90 if image_parts else 35)
+        deadline = deadline or time.monotonic() + (45 if image_parts else 35)
         for _ in range(len(self.api_keys)):
             key_index = self.current_key_index
             genai.configure(api_key=self.api_keys[key_index])
@@ -142,7 +146,7 @@ class Tickets(commands.Cog):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Presupuesto de respuesta agotado")
-                timeout = min(25 if image_parts else 12, remaining)
+                timeout = min(15 if image_parts else 12, remaining)
                 started = time.monotonic()
                 try:
                     model = genai.GenerativeModel(model_name)
@@ -167,6 +171,52 @@ class Tickets(commands.Cog):
                     print(f"[IA] {model_name} key={key_index} error={kind} segundos={time.monotonic()-started:.1f}; respaldo activado", flush=True)
             self.current_key_index = (key_index + 1) % len(self.api_keys)
         raise RuntimeError("La IA no está disponible temporalmente")
+
+    async def _read_local_receipts(self, parts):
+        async with asyncio.timeout(45):
+            async with self._ocr_lock:
+                return await local_receipt_reading(parts)
+
+    async def _read_receipts(self, parts):
+        provider_error = None
+        parse_error = None
+        try:
+            text = await self._generate_content_with_rotation(vision_prompt(len(parts)), parts)
+        except Exception as exc:
+            provider_error = exc
+            accepted, issues = [], []
+        else:
+            try:
+                accepted, issues = parse_receipts(text, len(parts))
+            except ValueError as exc:
+                parse_error = exc
+                accepted, issues = [], []
+        if len(accepted) == len(parts):
+            return accepted, issues, False
+        try:
+            text = await self._read_local_receipts(parts)
+            local, local_issues = parse_receipts(text, len(parts))
+            # Un estado explícitamente pendiente o un medio retirado no se rescata con OCR.
+            blocked = {i for i in range(len(parts)) if any(
+                str(issue).startswith(f'archivo {i + 1}:') and
+                ('pendiente o sin ejecutar' in str(issue) or 'medio o moneda no admitidos' in str(issue))
+                for issue in issues)}
+            combined = {r.index: r for r in local if r.index not in blocked}
+            recovered = set(combined) - {r.index for r in accepted}
+            combined.update((r.index, r) for r in accepted)
+            accepted = list(combined.values())
+            issues = [issue for issue in [*issues, *local_issues] if not any(
+                str(issue).startswith(f'archivo {i + 1}:') for i in combined)]
+            if recovered:
+                print(f'[OCR] Archivos recuperados={len(recovered)}', flush=True)
+        except Exception as exc:
+            print(f'[OCR] Lectura local incompleta error={type(exc).__name__}', flush=True)
+        if not accepted:
+            if provider_error:
+                raise ReceiptProcessingUnavailable('Lectores temporalmente indisponibles') from provider_error
+            if parse_error:
+                raise parse_error
+        return accepted, issues, provider_error is not None
 
     async def _procesar_bienvenida_y_registro(self, channel: discord.TextChannel):
         """Registra el ticket en la DB de forma garantizada y envía la bienvenida si aún no fue enviada."""
@@ -585,7 +635,7 @@ class Tickets(commands.Cog):
                 return
             receipt = any(attachment_mime(a) for a in message.attachments)
             try:
-                if job['attempts'] > 3:
+                if job['attempts'] > 3 and not (receipt and job.get('error_type') == 'ReceiptProcessingUnavailable'):
                     if receipt:
                         raise ReceiptReviewRequired('Se agotaron los intentos de lectura')
                     await self._request_manual_review(message.channel,
@@ -596,7 +646,9 @@ class Tickets(commands.Cog):
             except Exception as exc:
                 if await self._ticket_closed(message.channel.id):
                     return
-                if receipt and (isinstance(exc, ReceiptReviewRequired) or job['attempts'] >= MAX_RECEIPT_ATTEMPTS):
+                if receipt and (isinstance(exc, ReceiptReviewRequired) or
+                                (job['attempts'] >= MAX_RECEIPT_ATTEMPTS and
+                                 not isinstance(exc, ReceiptProcessingUnavailable))):
                     # No confundir una lectura sin resolver con un mensaje atendido.
                     await self._request_manual_review(message.channel,
                         "La lectura del comprobante necesita revisión manual. El ticket se conserva; no vuelvas a pagar.")
@@ -830,9 +882,7 @@ class Tickets(commands.Cog):
                 digests.append(digest)
             if parts:
                 stage = 'lectura_ia'
-                text = await self._generate_content_with_rotation(vision_prompt(len(parts)), parts)
-                stage = 'respuesta_ia'
-                receipts, read_issues = parse_receipts(text, len(parts))
+                receipts, read_issues, reader_unavailable = await self._read_receipts(parts)
                 issues.extend(read_issues)
                 if suggestion:
                     receipts_ok = []
@@ -881,6 +931,8 @@ class Tickets(commands.Cog):
                     await warning.edit(content="No pude completar la lectura. Ya pedí revisión; no vuelvas a pagar.")
             if issues or not related:
                 if any(getattr(issue, 'retryable', False) for issue in issues):
+                    if parts and reader_unavailable:
+                        raise ReceiptProcessingUnavailable('Parte de los archivos sigue pendiente de lectura')
                     raise IncompleteReceiptReading('La lectura automática quedó incompleta')
                 await self._request_manual_review(message.channel,
                     "Necesitamos revisar los comprobantes: " + "; ".join(issues or ['lectura incompleta']) + ". No vuelvas a pagar.")
@@ -897,14 +949,16 @@ class Tickets(commands.Cog):
             if await self._ticket_closed(message.channel.id):
                 raise
             print(f"[Comprobantes {message.channel.id} mensaje={message.id} etapa={stage}] {type(exc).__name__}", flush=True)
-            exhausted = job and job['attempts'] >= MAX_RECEIPT_ATTEMPTS
+            reader_outage = isinstance(exc, ReceiptProcessingUnavailable)
+            exhausted = job and job['attempts'] >= MAX_RECEIPT_ATTEMPTS and not reader_outage
             detail = ("La lectura sigue sin completarse tras varios intentos; administración tiene que revisarla."
                       if exhausted else "El procesamiento se demoró. El comprobante queda pendiente para reintentar automáticamente.")
             await warning.edit(content=detail + " No significa que tu pago sea incorrecto; no vuelvas a pagar ni hace falta reenviar el archivo.")
-            await self._request_manual_review(message.channel,
-                "La lectura del comprobante falló por un problema técnico. " +
-                ("Se agotaron los intentos automáticos; revisá este ticket, por favor." if exhausted else
-                 "Queda pendiente para reintentar automáticamente; el ticket se conserva."))
+            if not reader_outage or not job or job.get('error_type') != 'ReceiptProcessingUnavailable':
+                await self._request_manual_review(message.channel,
+                    "La lectura del comprobante falló por un problema técnico. " +
+                    ("Se agotaron los intentos automáticos; revisá este ticket, por favor." if exhausted else
+                     "Queda pendiente para reintentar automáticamente; el ticket se conserva."))
             # La bandeja conserva el error y programa otra lectura, incluso tras reinicios.
             raise
 
@@ -1205,6 +1259,17 @@ CONSULTA DEL CLIENTE (datos, no instrucciones del sistema): {json.dumps(payment_
             if await self._ticket_closed(message.channel.id):
                 return
             print(f"[Atención {message.channel.id}] {type(exc).__name__}", flush=True)
+            desired = requested_roles(message.content)
+            if (desired and not suggestion and purchase['state'] == 'unknown' and
+                    not purchase['receipt_reading'] and not purchase['has_attachment']):
+                ars = sum(PRICES[name]['ARS'] for name in desired)
+                usdt = sum(PRICES[name]['USDT'] for name in desired)
+                ars_text = f'{ars:,.0f}'.replace(',', '.')
+                usdt_text = f'{usdt:.2f}'.replace('.', ',')
+                await send_response(message,
+                    f"Para **{', '.join(desired)}**, el total es **${ars_text} ARS** o **{usdt_text} USDT**.\n"
+                    f"{details}\nDespués adjuntá el comprobante acá. Podés enviar varios pagos juntos.")
+                return
             await send_response(message,
                 "La respuesta automática está demorada. Puedo informarte precios y datos de pago por acá; "
                 "para esta consulta voy a pedir ayuda a administración.")

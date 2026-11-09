@@ -44,6 +44,7 @@ def fixture():
     conn = Connection()
     bot = NS(pool=pool_for(conn), user=NS(id=1444824969480769718, mentioned_in=lambda m: False))
     cog = Tickets(bot)
+    cog._read_local_receipts = AsyncMock(return_value='{"comprobantes":[]}')
     cog.payments = NS(known=AsyncMock(return_value=None), save=AsyncMock(return_value=[]),
                       remember=AsyncMock(),
                       prepare=AsyncMock(return_value={'empty': True}),

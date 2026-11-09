@@ -39,6 +39,7 @@ Variables privadas: `DISCORD_TOKEN`, `DATABASE_URL`, `GEMINI_API_KEY_1`, `GEMINI
 
 ```sh
 pip install -r requirements.txt
+python scripts/prepare_ocr.py
 python main.py
 ```
 
@@ -64,11 +65,13 @@ La conversación de compra, por ejemplo «Quiero adquirir el diamante», contin�
 
 `ticket_inbox` guarda IDs y estados, no el texto de las conversaciones. Los mensajes en trámite tienen una reserva temporal; si se reinicia el proceso, se recuperan al vencerla. Los eventos duplicados ya completados no se procesan nuevamente. La revisión de canales y bienvenidas corre al reconectar y cada cinco minutos, en lotes limitados. Un ticket con respuesta pendiente no se borra por inactividad; la salida confirmada de su creador aplica el cierre definitivo descrito arriba.
 
-Los errores técnicos de lectura (IA, descarga, base o respuesta incompleta) dejan el comprobante pendiente, con el tipo de error, hasta tres intentos totales. El barrido cada cinco minutos retoma el archivo original de Discord y actualiza el mismo aviso; no requiere que el cliente lo reenvíe. Los archivos que requieren decisión humana y los intentos agotados quedan en estado `manual`, nunca como lectura completada, y mantienen el ticket protegido mientras el creador siga en el servidor. `/manual` pausa los reintentos sin consumirlos; `/automatico` permite retomarlos. Un rango escrito después del archivo se guarda y responde localmente con el estado real de lectura, aunque la foto haya quedado fuera del historial reciente. El éxito, los pagos y las asignaciones conservan sus controles de idempotencia.
+Si Gemini falla u omite archivos, un respaldo local Tesseract lee las imágenes y PDF. El modelo de 4 MB se prepara durante el build, desde una revisión fija con SHA-256 verificado. El OCR procesa cada archivo en un proceso con límite de tiempo y usa el mismo validador, registro y entrega. El texto extraído no se publica ni se guarda en logs. Una lectura explícitamente pendiente o de un medio retirado no se aprueba mediante el respaldo.
+
+Cuando fallan técnicamente los lectores, el comprobante permanece `pending` con el error `ReceiptProcessingUnavailable`. Los reintentos se espacian hasta una hora y continúan tras reinicios, sin agotar el límite de tres lecturas ni repetir el aviso a administración en cada intento. El barrido cada cinco minutos retoma el archivo de Discord y actualiza el mismo mensaje. Los errores de lectura no recuperados y archivos que requieren una decisión humana pasan a `manual` al agotar tres intentos. `/manual`, la salida del creador, el cierre y `/conservar_ticket` conservan sus controles. Un archivo eliminado de Discord requiere intervención humana.
 
 La recuperación comienza con el despliegue de esta versión; no reproduce conversaciones ni comprobantes históricos anteriores. Un archivo eliminado de Discord o un canal sin permisos requiere intervención humana. La recuperación depende de que Discord mantenga el mensaje y el servicio vuelva a ejecutarse.
 
-El modo manual se respeta durante la recuperación. Las consultas demoradas tienen un aviso de recepción y, si falla Google, una respuesta útil y derivación a administración. Los modelos con errores quedan temporalmente en espera para no agotar cuota repitiendo llamadas. El presupuesto incluye la espera por la IA: 35 segundos para texto y 90 para comprobantes.
+El modo manual se respeta durante la recuperación. Las consultas demoradas tienen un aviso de recepción y, si falla Google, una respuesta útil y derivación a administración. Un pedido claro de rangos recibe su total real y los datos de pago de respaldo. Los modelos con errores quedan temporalmente en espera para no agotar cuota repitiendo llamadas. El presupuesto incluye la espera por la IA: 35 segundos para texto y 45 para comprobantes, más hasta 45 segundos para OCR serializado.
 
 Durante la campaña temporal se suspenden los avisos semanales. No se emiten anuncios masivos ni menciones generales; las respuestas del modelo también eliminan esas menciones.
 

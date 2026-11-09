@@ -73,7 +73,8 @@ class Bot(commands.Bot):
         checked = 0
         while not self.is_closed():
             self.health.update(discord=self.is_ready())
-            if self.pool is not None and time.monotonic()-checked >= 300:
+            database_check_interval = 300 if self.health.snapshot()['database'] else 10
+            if self.pool is not None and time.monotonic()-checked >= database_check_interval:
                 try:
                     async with self.pool.acquire(timeout=10) as conn:
                         await conn.fetchval('SELECT 1', timeout=5)

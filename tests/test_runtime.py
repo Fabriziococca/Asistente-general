@@ -5,7 +5,7 @@ from threading import Thread
 import time
 import unittest
 from types import SimpleNamespace as NS
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.error import HTTPError
 from urllib.request import urlopen, Request
 
@@ -50,6 +50,20 @@ class HealthTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_database_health_recovers_ten_seconds_after_transient_timeout(self):
+        conn = Connection()
+        conn.fetchval = AsyncMock(side_effect=[TimeoutError(), 1])
+        health = HealthState()
+        client = NS(pool=pool_for(conn), health=health, is_ready=lambda: True,
+                    is_closed=MagicMock(side_effect=[False, False, True]))
+        now = [1000]
+        async def advance(seconds):
+            now[0] += seconds
+        with patch('main.time', NS(monotonic=lambda: now[0])), patch('main.asyncio.sleep', new=advance):
+            await Bot._monitor_health(client)
+        self.assertEqual(conn.fetchval.await_count, 2)
+        self.assertTrue(health.snapshot()['database'])
+
     async def test_transient_failure_creates_fresh_client_and_closes_previous(self):
         clients=[]
         def factory(**kwargs):

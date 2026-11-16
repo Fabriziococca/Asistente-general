@@ -2,6 +2,7 @@
 
 import discord
 
+from discord_config import ADMIN_CONTACT_ID
 from payment_policy import payment_copy
 
 
@@ -39,7 +40,7 @@ def ticket_welcome(suggestion=False):
             '1. Indicá qué rango o rangos querés.\n'
             '2. Adjuntá la FOTO o PDF del comprobante; podés enviar varios. El banco no se vincula solo.\n'
             '3. El bot revisa y entrega los rangos. Si hay una demora, avisamos a administración; no vuelvas a pagar.\n\n'
-            '❓ Dudas o problemas: etiquetá a @titocalderon.\n'
+            f'❓ Dudas o problemas: etiquetá a <@{ADMIN_CONTACT_ID}>.\n'
             'Podés pagar varios rangos juntos.'),inline=False)
         content='¡Hola! Soy tu asistente de ventas automatizado. 🤖\nEstoy acá para ayudarte a obtener tus rangos.'
     return content,embed

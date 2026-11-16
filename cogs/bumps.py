@@ -5,7 +5,6 @@ import asyncpg
 import asyncio
 
 DISBOARD_ID = 302050872383242240
-FABRIZIO_ID = 704501115110162542
 
 class Bumps(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -61,7 +60,7 @@ class Bumps(commands.Cog):
 
     @app_commands.command(name="toggle_bumps", description="Activa o desactiva el conteo de bumps en tiempo real")
     async def toggle_bumps(self, interaction: discord.Interaction):
-        if interaction.user.id != FABRIZIO_ID and not interaction.user.guild_permissions.administrator:
+        if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ No tenés permisos para ejecutar este comando.", ephemeral=True)
             return
 
@@ -72,7 +71,7 @@ class Bumps(commands.Cog):
     @app_commands.command(name="sincronizar_bumps", description="Lee el historial de Discord y sincroniza todos los bumps en 1 sola consulta a la DB")
     @app_commands.describe(limite="Cantidad de mensajes a escanear del canal de bumps (por defecto 1000)")
     async def sincronizar_bumps(self, interaction: discord.Interaction, limite: int = 1000):
-        if interaction.user.id != FABRIZIO_ID and not interaction.user.guild_permissions.administrator:
+        if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ No tenés permisos para ejecutar este comando.", ephemeral=True)
             return
 

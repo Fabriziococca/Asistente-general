@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import warnings
 
 warnings.filterwarnings('ignore', category=FutureWarning)
-from cogs.tickets import Tickets, ROLES, FABRIZIO_ID
+from cogs.tickets import Tickets, ROLES
 from ticket_inbox import ReceiptReviewRequired
 from receipts import PRICES
 from test_receipts import reading
@@ -61,7 +61,7 @@ def fixture():
     author = NS(id=123, bot=False, guild_permissions=NS(administrator=False), roles=[])
     author.add_roles = AsyncMock()
     roles = {r['id']: NS(id=r['id']) for r in ROLES.values()}
-    guild = NS(id=567, get_role=roles.get, get_member=lambda uid: author,
+    guild = NS(id=567, owner_id=704501115110162542, get_role=roles.get, get_member=lambda uid: author,
                fetch_member=AsyncMock(return_value=author))
     channel = NS(id=456, name='ticket-test', category_id=0, sent=[], delete=AsyncMock())
     channel.guild = guild
@@ -89,6 +89,20 @@ def delivery():
 
 
 class TicketTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mentions_for_both_accounts_route_to_the_current_admin(self):
+        current_admin_id = 1221274084718018562
+        for mentioned_id in (704501115110162542, current_admin_id):
+            with self.subTest(mentioned_id=mentioned_id):
+                cog, conn, message = fixture()
+                conn.row = {'estado': 'abierto', 'user_id': message.author.id}
+                message.content = f'<@{mentioned_id}> necesito ayuda humana'
+                message.mentions = [NS(id=mentioned_id)]
+                await cog._handle_ticket_message(message)
+                message.channel.send.assert_awaited_once()
+                notification = message.channel.send.await_args
+                self.assertIn(f'<@{current_admin_id}>', notification.args[0])
+                self.assertEqual([user.id for user in notification.kwargs['allowed_mentions'].users], [current_admin_id])
+
     async def test_preservation_command_saves_flag_before_confirming(self):
         cog, conn, msg = fixture()
         interaction = NS(channel=msg.channel, response=NS(defer=AsyncMock()),
@@ -202,7 +216,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
             await cog.handle_receipt_image(msg)
         cog.payments.save.assert_not_awaited()
         self.assertTrue(any('conservar=TRUE' in call.args[0] for call in conn.execute.await_args_list))
-        self.assertTrue(any(str(FABRIZIO_ID) in (text or '') for text in msg.channel.sent))
+        self.assertTrue(any('<@1221274084718018562>' in (text or '') for text in msg.channel.sent))
 
     async def test_no_grant_before_payment_persistence(self):
         cog, _, msg = fixture()

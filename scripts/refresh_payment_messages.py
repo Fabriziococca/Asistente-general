@@ -17,6 +17,7 @@ sys.path.insert(0,str(ROOT))
 import requests
 from dotenv import dotenv_values
 
+from discord_config import ADMIN_CONTACT_ID
 from payment_policy import (payment_copy, announcement_text, BANK_HOLDER, RETIRED_PAYMENT_PATTERN, EMAIL_PATTERN,
                             BINANCE_RECIPIENT_ALIASES, obsolete_payment_reference,
                             private_identity_reference, public_message_needs_refresh)
@@ -144,6 +145,8 @@ def main():
     identity=api.request('GET','/users/@me')
     if identity['id']!='1444824969480769718':
         raise RuntimeError('La credencial no corresponde al asistente esperado')
+    guild=api.request('GET',f'/guilds/{args.guild}')
+    manual_authors={guild['owner_id'], str(ADMIN_CONTACT_ID)}
     channels=api.request('GET',f'/guilds/{args.guild}/channels')
     selected=[c for c in channels if c['type'] in (0,5) and (
         args.all_channels or re.search(r'^(ticket-|sug-)|compr|rang|informaci[oó]n|sugeren|promo|venta',c['name'],re.I)
@@ -175,7 +178,7 @@ def main():
                 if message['author']['id']==identity['id']:
                     record['replacement']=replacement(message,channel['name'].startswith('sug-') or channel.get('parent_id')=='1510095191275737088')
                     own.append(record)
-                elif message['author']['id']=='704501115110162542':
+                elif message['author']['id'] in manual_authors:
                     record['replacement_content']=owner_replacement(message.get('content',''))
                     manual.append(record)
             if len(messages)<100:

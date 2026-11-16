@@ -14,6 +14,7 @@ import contextlib
 import json
 from types import SimpleNamespace
 
+from discord_config import ADMIN_CONTACT_ID
 from payment_store import PaymentStore
 from receipts import PRICES, attachment_mime, parse_receipts, requested_roles, vision_prompt, IncompleteReceiptReading, normalize
 from communication import local_answer, history_line, send_response
@@ -25,7 +26,6 @@ from receipt_ocr import read_receipts as local_receipt_reading, verify_model, Re
 
 # --- CONFIGURACIÓN DE NEGOCIO AND ACCESO HIGH-LEVEL ---
 ID_CATEGORIA_SUGERENCIAS = 1510095191275737088
-FABRIZIO_ID = 704501115110162542
 
 # Configuración de Roles y Precios estricta (Sin puntos como separador de miles)
 ROLES = {
@@ -37,7 +37,6 @@ ROLES = {
 class Tickets(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.mi_id = FABRIZIO_ID # Tu ID de usuario para detección de menciones
         self.payments = PaymentStore(bot.pool)
         self._ticket_locks = weakref.WeakValueDictionary()
         self._ai_lock = asyncio.Lock()
@@ -607,7 +606,7 @@ class Tickets(commands.Cog):
             return
         if message.channel.id in self._closed_tickets:
             return
-        if message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator:
+        if message.author.guild_permissions.administrator:
             try:
                 await self._update_ticket_activity(message)
             except Exception as exc:
@@ -705,8 +704,7 @@ class Tickets(commands.Cog):
                 cursor = await self.inbox.cursor(channel.id) or self._recovery_floor
                 last = cursor
                 async for message in channel.history(limit=100, after=discord.Object(id=cursor), oldest_first=True):
-                    if not message.author.bot and not message.content.startswith('/') and not (
-                        message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator):
+                    if not message.author.bot and not message.content.startswith('/') and not message.author.guild_permissions.administrator:
                         await self.inbox.record(message)
                     last = message.id
                 if last > cursor:
@@ -751,7 +749,7 @@ class Tickets(commands.Cog):
             ticket = await conn.fetchrow("SELECT * FROM tickets WHERE channel_id=$1", message.channel.id)
         if not ticket:
             raise RuntimeError("Ticket sin registro")
-        is_staff = message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator
+        is_staff = message.author.guild_permissions.administrator
         if ticket['estado'] in ('pausado','salio','cerrado') or is_staff:
             return
         if ticket['user_id'] and ticket['user_id'] != message.author.id:
@@ -767,19 +765,19 @@ class Tickets(commands.Cog):
             await self.handle_receipt_image(message, job=job)
             return
         if "canjear" in message.content.lower() and "puntos" in message.content.lower():
-            await message.reply(f"¡Perfecto! <@{FABRIZIO_ID}> revisará la disponibilidad y el canje de tus 30 puntos.",
-                allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=FABRIZIO_ID)]))
+            await message.reply(f"¡Perfecto! <@{ADMIN_CONTACT_ID}> revisará la disponibilidad y el canje de tus 30 puntos.",
+                allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=ADMIN_CONTACT_ID)]))
             return
         if requested_roles(message.content) and await self._handle_pending_purchase(message):
             return
-        if any(u.id == self.mi_id for u in message.mentions):
+        if any(u.id in (ADMIN_CONTACT_ID, message.guild.owner_id) for u in message.mentions):
             await self._request_manual_review(message.channel, "El cliente pidió asistencia humana en este ticket.")
             return
         await self.handle_support_query(message)
 
     async def _update_ticket_activity(self, message):
         # Una respuesta de administración no cambia el dueño del ticket.
-        staff = message.author.id == FABRIZIO_ID or message.author.guild_permissions.administrator
+        staff = message.author.guild_permissions.administrator
         owner_id = None if staff else message.author.id
         async with self.bot.pool.acquire(timeout=10) as conn:
             async with conn.transaction():
@@ -825,8 +823,8 @@ class Tickets(commands.Cog):
             if now - self._alerted.get(channel.id, -9999) < 300:
                 await channel.send(reason, allowed_mentions=discord.AllowedMentions.none())
             else:
-                await channel.send(f"🔔 <@{FABRIZIO_ID}> {reason}",
-                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=FABRIZIO_ID)]))
+                await channel.send(f"🔔 <@{ADMIN_CONTACT_ID}> {reason}",
+                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=ADMIN_CONTACT_ID)]))
                 self._alerted[channel.id] = now
         except discord.HTTPException as exc:
             print(f"[Aviso revisión {channel.id}] {type(exc).__name__}", flush=True)
@@ -909,8 +907,8 @@ class Tickets(commands.Cog):
                 if related:
                     await self._marcar_ticket_completado(message.channel.id)
                     await warning.edit(content="✅ Comprobante de petición registrado. Administración continuará con tu pedido.")
-                    await message.channel.send(f"🔔 <@{FABRIZIO_ID}> Hay una petición con comprobante en este ticket.",
-                        allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=FABRIZIO_ID)]))
+                    await message.channel.send(f"🔔 <@{ADMIN_CONTACT_ID}> Hay una petición con comprobante en este ticket.",
+                        allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=ADMIN_CONTACT_ID)]))
                 else:
                     await warning.edit(content="No pude completar la lectura. Ya pedí revisión; no vuelvas a pagar.")
             else:
@@ -1135,8 +1133,8 @@ class Tickets(commands.Cog):
             detail = (f"Quedan pendientes **{', '.join(remaining)}**; el pedido sigue abierto."
                       if remaining else "Entrega de estos rangos confirmada a partir de los comprobantes.")
             await channel.send(f"✅ <@{delivery['user_id']}> Ya tenés los rangos **{', '.join(delivery['roles_asignados'])}**. "
-                               f"🔔 <@{FABRIZIO_ID}> {detail}",
-                               allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=FABRIZIO_ID),discord.Object(id=delivery['user_id'])]))
+                               f"🔔 <@{ADMIN_CONTACT_ID}> {detail}",
+                               allowed_mentions=discord.AllowedMentions(users=[discord.Object(id=ADMIN_CONTACT_ID),discord.Object(id=delivery['user_id'])]))
             await self.payments.notified(delivery['entrega_id'])
         except discord.HTTPException:
             print(f"[Entrega {delivery['entrega_id']}] Rangos confirmados; no se pudo enviar aviso")
@@ -1221,7 +1219,7 @@ class Tickets(commands.Cog):
                 requested_roles(message.content) or any(word in message.content.lower() for word in ('pagu','foto','comprobante','rango','rol'))):
                 await self._request_manual_review(message.channel, "El cliente ya adjuntó un archivo y todavía no hay una validación registrada.")
             return
-        context = '\n'.join(history_line(m, FABRIZIO_ID) for m in history)
+        context = '\n'.join(history_line(m, message.guild.owner_id) for m in history)
         methods, details, prices, suggestion_prices = payment_copy()
         rules = (
             f"PETICIONES: cuestan {suggestion_prices}. Pedí plataforma y red social. Solo administración confirma disponibilidad; "

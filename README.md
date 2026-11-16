@@ -45,6 +45,8 @@ python main.py
 
 El bot necesita intents de miembros y contenido de mensajes, permiso para administrar roles y un rol superior a todos los rangos vendidos. Identificadores de roles: `cogs/tickets.py`. Destinos públicos y precios: `payment_policy.py`, compartidos por mensajes y cálculo y contrastados con tests.
 
+`discord_config.py` contiene el ID del contacto administrativo que recibe las menciones de tickets, entregas y canjes. Una mención al propietario en un ticket también deriva al contacto vigente. Los comandos y el reconocimiento de administración usan los permisos de Discord.
+
 El inicio aplica `payment_store.SCHEMA`: columnas e índices adicionales, sin borrar pagos ni reconstruir datos históricos. En un rollback se conservan las columnas; una versión anterior no respeta las protecciones ni entregas nuevas.
 
 ## Pruebas

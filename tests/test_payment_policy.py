@@ -27,6 +27,7 @@ class PaymentPolicyTests(unittest.IsolatedAsyncioTestCase):
         content,embed=ticket_welcome()
         current={'content':content,'embeds':[embed.to_dict()]}
         self.assertFalse(needs_refresh(current))
+        self.assertIn('<@1221274084718018562>', json.dumps(current))
         old=json.loads(json.dumps(current).replace('5.900','4.700'))
         self.assertTrue(needs_refresh(old))
 

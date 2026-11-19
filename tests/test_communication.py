@@ -188,7 +188,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         cog.api_keys=['fake'];cog.model_pool=['first','second']
         first=NS(generate_content=lambda **kw: (_ for _ in ()).throw(RuntimeError('down')))
         second=NS(generate_content=lambda **kw: NS(text='OK'))
-        with patch('cogs.tickets.genai.configure'),patch('cogs.tickets.genai.GenerativeModel',side_effect=[first,second,second]) as create:
+        with patch('receipt_reader.genai.configure'),patch('receipt_reader.genai.GenerativeModel',side_effect=[first,second,second]) as create:
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'OK')
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'OK')
         self.assertEqual([call.args[0] for call in create.call_args_list],['first','second','second'])
@@ -197,16 +197,16 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
         cog,_,_=fixture();cog.api_keys=['fake-one','fake-two'];cog.model_pool=['first','second']
         down=NS(generate_content=lambda **kw: (_ for _ in ()).throw(ServiceUnavailable('overloaded')))
         healthy=NS(generate_content=lambda **kw:NS(text='Respuesta útil'))
-        with patch('cogs.tickets.genai.configure'),patch('cogs.tickets.time.monotonic',return_value=100),patch(
-                'cogs.tickets.genai.GenerativeModel',side_effect=[down,healthy,healthy,healthy]) as create:
+        with patch('receipt_reader.genai.configure'),patch('receipt_reader.time.monotonic',return_value=100),patch(
+                'receipt_reader.genai.GenerativeModel',side_effect=[down,healthy,healthy,healthy]) as create:
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
             cog.current_key_index=1
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
-            with patch('cogs.tickets.time.monotonic',return_value=131):
+            with patch('receipt_reader.time.monotonic',return_value=131):
                 self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
         self.assertEqual([call.args[0] for call in create.call_args_list],['first','second','second','second'])
-        with patch('cogs.tickets.genai.configure'),patch('cogs.tickets.time.monotonic',return_value=221),patch(
-                'cogs.tickets.genai.GenerativeModel',return_value=healthy) as create:
+        with patch('receipt_reader.genai.configure'),patch('receipt_reader.time.monotonic',return_value=221),patch(
+                'receipt_reader.genai.GenerativeModel',return_value=healthy) as create:
             self.assertEqual(await cog._generate_content_with_rotation('prompt'),'Respuesta útil')
         self.assertEqual(create.call_args.args[0],'first')
 
@@ -221,7 +221,7 @@ class CommunicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_tries_fast_gemini_first_without_changing_vision_order(self):
         cog,_,_=fixture();cog.api_keys=['fake']
         model=NS(generate_content=lambda **kw:NS(text='OK'))
-        with patch('cogs.tickets.genai.configure'),patch('cogs.tickets.genai.GenerativeModel',return_value=model) as create:
+        with patch('receipt_reader.genai.configure'),patch('receipt_reader.genai.GenerativeModel',return_value=model) as create:
             await cog._generate_content_with_rotation('Compra de Diamante')
             await cog._generate_content_with_rotation('Comprobante',[{'mime_type':'image/png','data':b'test'}])
         self.assertEqual([call.args[0] for call in create.call_args_list],['gemini-3.6-flash','gemini-3.8-flash'])

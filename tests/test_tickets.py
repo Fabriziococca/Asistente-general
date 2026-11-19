@@ -299,7 +299,7 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         cog.api_keys = ['fake-local-test']
         cog.model_pool = ['gemini-3.8-flash']
         model = NS(generate_content=MagicMock(return_value=NS(text='OK')))
-        with patch('cogs.tickets.genai.configure'), patch('cogs.tickets.genai.GenerativeModel', return_value=model):
+        with patch('receipt_reader.genai.configure'), patch('receipt_reader.genai.GenerativeModel', return_value=model):
             parts = [{'mime_type': 'image/png', 'data': b'first'}, {'mime_type': 'image/png', 'data': b'second'}]
             self.assertEqual(await cog._generate_content_with_rotation('prompt', parts), 'OK')
         self.assertEqual(model.generate_content.call_args.kwargs['contents'], ['prompt', *parts])

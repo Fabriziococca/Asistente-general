@@ -1,6 +1,7 @@
 """Respaldo OCR local. Cada archivo se procesa en un proceso con tiempo limitado."""
 
 import asyncio
+from datetime import date
 import hashlib
 import io
 import json
@@ -100,8 +101,29 @@ def receipt_from_text(text, index=0):
     result.update(es_comprobante=True, monto=str(next(iter(amounts))), moneda=currency,
                   metodo_pago=method, destinatario=destination, cuenta_destino=account,
                   pay_id_destino=pay_id, pago_completado=False if pending else None,
-                  numero_operacion=operation[1] if operation else None)
+                  numero_operacion=operation[1] if operation else None,
+                  fecha_operacion=operation_date(text))
     return result
+
+
+def operation_date(text):
+    months = 'enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre'.split()
+    dates = set()
+    for line in normalize(text).splitlines():
+        if re.search(r'descarga|impresion|vencimiento|generacion|emision|download|expir', line):
+            continue
+        for pattern, order in (
+            (r'\b(20\d\d)-(\d{2})-(\d{2})\b', (1,2,3)),
+            (r'\b(\d{1,2})[/-](\d{1,2})[/-](20\d\d)\b', (3,2,1)),
+            (r'\b(\d{1,2})\s+(?:de\s+)?('+'|'.join(months)+r')\s+(?:de\s+)?(20\d\d)\b', (3,2,1)),
+        ):
+            for match in re.finditer(pattern,line):
+                year,month,day = (match[i] for i in order)
+                try:
+                    dates.add(date(int(year),months.index(month)+1 if month in months else int(month),int(day)))
+                except ValueError:
+                    return None
+    return dates.pop().isoformat() if len(dates)==1 else None
 
 
 def _recognize(image):

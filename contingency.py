@@ -11,6 +11,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import time
+from urllib.parse import urlsplit
 
 import asyncpg
 import discord
@@ -19,8 +20,12 @@ from dotenv import load_dotenv
 
 from communication import local_answer
 from discord_config import ADMIN_CONTACT_ID, LOCAL_TICKET_MARK, is_local_ticket
+from local_sales import LocalSales, SaleReview
 from payment_policy import payment_copy
-from receipts import attachment_mime, normalize, requested_roles
+from receipt_reader import ReceiptReader
+from receipt_ocr import ReceiptProcessingUnavailable
+from receipts import attachment_mime, normalize, requested_roles, parse_receipts
+from sale_import import import_sales
 from cogs.tickets import ID_CATEGORIA_SUGERENCIAS, ROLES
 
 
@@ -28,12 +33,16 @@ log = logging.getLogger('contingencia')
 WELCOME = 'Atención temporal de Chaquetas'
 RANK_HELP = 'Después de verificar la acreditación, administración puede usar `!entregar ID_DEL_MENSAJE Oro` en este ticket. Para varios rangos, separalos por comas.'
 REVIEW = 'Administración revisa el comprobante y entrega los rangos desde este ticket. Si ya pagaste, no vuelvas a pagar.'
+AUTO = 'Indicá los rangos que querés y adjuntá la foto o PDF del pago. Voy a leer el comprobante y entregar los rangos. Si hace falta una revisión, te aviso acá.'
+ARGENTINA = dt.timezone(dt.timedelta(hours=-3))
 
 
 def answer(message, suggestion):
     text = normalize(message.content)
-    if message.attachments or any(word in text for word in ('comprobante', 'transferi', 'pague', 'entrega', 'demora', 'tarda', 'mi rango', 'mis rango', 'mi rol', 'mis rol', 'canjear')):
+    if message.attachments or 'canjear' in text:
         return REVIEW
+    if any(word in text for word in ('comprobante','transferi','pague','entrega','demora','tarda','mi rango','mis rango','mi rol','mis rol')):
+        return REVIEW if suggestion else 'Si ya pagaste, adjuntá el comprobante y decime qué rangos elegiste. No vuelvas a pagar.'
     result = local_answer(message.content, suggestion=suggestion)
     if result:
         return result
@@ -88,6 +97,10 @@ class LocalTickets(discord.Client):
             raise ValueError('El alcance no coincide con el de este registro local')
         self.since = since
         self.lock = asyncio.Lock()
+        self.stopping = False
+        self.next_quota_check = time.monotonic() + 3600
+        self.sales = LocalSales(self.state)
+        self.reader = ReceiptReader()
 
     def eligible(self, channel):
         return (isinstance(channel, discord.TextChannel) and channel.guild.id == self.guild_id
@@ -105,10 +118,18 @@ class LocalTickets(discord.Client):
         if guild is None:
             await self.close()
             return
-        log.info('Discord listo bot=%s guild=%s modo=temporal', self.user.id, guild.id)
+        log.info('Discord listo bot=%s guild=%s modo=ventas-locales', self.user.id, guild.id)
 
     @tasks.loop(minutes=2)
     async def reconcile(self):
+        if self.guard and time.monotonic() >= self.next_quota_check:
+            try:
+                if not await self.guard.blocked(refresh=True):
+                    await self.close()
+                    return
+                self.next_quota_check = time.monotonic() + 3600
+            except (OSError,asyncpg.PostgresError):
+                return
         guild = self.get_guild(self.guild_id)
         if guild:
             for channel in guild.text_channels:
@@ -132,7 +153,7 @@ class LocalTickets(discord.Client):
             await self.sync(message.channel)
 
     async def on_interaction(self, interaction):
-        if interaction.guild_id != self.guild_id or interaction.type != discord.InteractionType.application_command:
+        if self.stopping or interaction.guild_id != self.guild_id or interaction.type != discord.InteractionType.application_command:
             return
         if self.guard and not await self.guard.blocked():
             await self.close()
@@ -155,6 +176,8 @@ class LocalTickets(discord.Client):
 
     async def sync(self, channel):
         async with self.lock:
+            if self.stopping:
+                return
             self.state.execute('INSERT OR IGNORE INTO channels(id) VALUES (?)',(channel.id,))
             welcome, cursor, manual = self.state.execute('SELECT welcome,cursor,manual FROM channels WHERE id=?',(channel.id,)).fetchone()
             if welcome and not is_local_ticket(channel):
@@ -182,7 +205,7 @@ class LocalTickets(discord.Client):
                     suggestion = channel.name.startswith('sug-') or channel.category_id == ID_CATEGORIA_SUGERENCIAS
                     _, details, prices, suggestion_price = payment_copy()
                     body = (f'La petición cuesta {suggestion_price}. Esperá la confirmación de disponibilidad antes de pagar.' if suggestion else prices)
-                    embed = discord.Embed(title=WELCOME,description=body+'\n\n'+details+'\n\n'+REVIEW)
+                    embed = discord.Embed(title=WELCOME,description=body+'\n\n'+details+'\n\n'+(REVIEW if suggestion else AUTO))
                     sent = await channel.send(embed=embed)
                     log.info('Bienvenida canal=%s mensaje=%s',channel.id,sent.id)
                 if sent:
@@ -197,9 +220,38 @@ class LocalTickets(discord.Client):
                             await self.grant(message)
                     elif not manual and not message.content.startswith(('/', '!')):
                         suggestion = channel.name.startswith('sug-') or channel.category_id == ID_CATEGORIA_SUGERENCIAS
-                        reply = answer(message,suggestion)
+                        reply = None
                         mentions = discord.AllowedMentions.none()
-                        if message.attachments:
+                        sale = not suggestion and (message.attachments or requested_roles(message.content))
+                        if sale:
+                            retry = self.state.execute('SELECT attempts,retry_after FROM sale_retries WHERE message=?',(message.id,)).fetchone()
+                            if retry and retry[1] > time.time():
+                                return
+                            try:
+                                reply = await self.process_sale(message)
+                            except (SaleReview,discord.Forbidden,discord.NotFound) as exc:
+                                reason = str(exc) if isinstance(exc,SaleReview) else 'No pude verificar los permisos o la entrega en Discord.'
+                                self.sales.review(message,reason)
+                                reply = reason + ' ' + REVIEW
+                            except (ReceiptProcessingUnavailable,ValueError,RuntimeError,OSError,discord.HTTPException) as exc:
+                                attempts = retry[0]+1 if retry else 1
+                                log.warning('Reintento de venta canal=%s mensaje=%s intento=%s error=%s',channel.id,message.id,attempts,type(exc).__name__)
+                                if attempts < 3:
+                                    self.state.execute('INSERT OR REPLACE INTO sale_retries VALUES (?,?,?)',
+                                                       (message.id,attempts,time.time()+60*attempts))
+                                    if attempts == 1:
+                                        await channel.send('La lectura o la entrega está demorada. Voy a reintentar con el mismo comprobante; no vuelvas a pagar.')
+                                    return
+                                self.sales.review(message,'Verificación técnica pendiente: '+type(exc).__name__)
+                                reply = 'Guardé el pedido para revisión. '+REVIEW
+                            self.state.execute('DELETE FROM sale_retries WHERE message=?',(message.id,))
+                        if reply is None and not suggestion and any(w in normalize(message.content) for w in ('pague','transferi','mi rango','mis rango','mi rol','comprobante','entrega')):
+                            owns = self.state.execute('SELECT 1 FROM sale_orders WHERE channel=? AND buyer=?',(channel.id,message.author.id)).fetchone()
+                            if owns:
+                                reply = self.sales.summarize(channel.id) or None
+                        if reply is None:
+                            reply = answer(message,suggestion)
+                        if REVIEW in reply and (message.attachments or sale):
                             reply += f' <@{ADMIN_CONTACT_ID}>'
                             mentions = discord.AllowedMentions(users=[discord.Object(id=ADMIN_CONTACT_ID)])
                         await message.reply(reply,mention_author=False,allowed_mentions=mentions)
@@ -216,6 +268,66 @@ class LocalTickets(discord.Client):
                     await channel.delete(reason='Ticket temporal vacío tres horas después de la bienvenida')
                     self.state.execute('UPDATE channels SET closed=1 WHERE id=?',(channel.id,))
                     log.info('Cierre de ticket vacío canal=%s',channel.id)
+
+    async def process_sale(self, message):
+        channel = message.channel
+        member = await message.guild.fetch_member(message.author.id)
+        if member.bot or member.guild_permissions.administrator or channel.overwrites_for(member).view_channel is not True:
+            raise SaleReview('No pude confirmar a la persona compradora en los permisos privados del ticket.')
+        wanted = requested_roles(message.content)
+        attachments = message.attachments
+        if len(attachments) > 10 or sum(a.size for a in attachments) > 18 * 1024 * 1024:
+            raise SaleReview('Los adjuntos superan el límite de lectura.')
+        files, parts, digests = [], [], []
+        for a in attachments:
+            mime = attachment_mime(a)
+            if not mime:
+                raise SaleReview('Necesito una foto o PDF legible del comprobante.')
+            data = await a.read()
+            digest = hashlib.sha256(data).hexdigest()
+            if digest in digests:
+                continue
+            recorded = self.state.execute('SELECT channel,buyer FROM sale_payments WHERE digest=?',(digest,)).fetchone()
+            if recorded == (channel.id,member.id):
+                continue
+            if recorded or self.state.execute('SELECT 1 FROM receipt_files WHERE digest=?',(digest,)).fetchone():
+                raise SaleReview('El archivo ya figura en otra operación.')
+            digests.append(digest)
+            parts.append({'mime_type':mime,'data':data})
+        if parts:
+            readings, issues, _ = await self.reader._read_receipts(parts)
+            if len(readings) != len(parts) or issues:
+                raise SaleReview('La lectura no confirmó todos los importes, destinos y estados del pago.')
+            if any(r.paid_on is None or not r.operation_key for r in readings):
+                local, _ = parse_receipts(await self.reader._read_local_receipts(parts),len(parts))
+                local_by_index = {r.index:r for r in local}
+                # Reemplazar la lectura completa solo si los dos lectores coinciden en el pago.
+                for i, r in enumerate(readings):
+                    alt = local_by_index.get(r.index)
+                    if (alt and alt.paid_on and alt.operation_key and (not r.paid_on or not r.operation_key)
+                            and (alt.amount,alt.currency,alt.method)==(r.amount,r.currency,r.method)
+                            and (not r.operation_key or r.operation_key==alt.operation_key)
+                            and (not r.paid_on or r.paid_on==alt.paid_on)):
+                        readings[i] = alt
+            files = [(digests[r.index],r) for r in readings]
+        first = discord.utils.snowflake_time(max(channel.id,self.since)).astimezone(ARGENTINA).date()
+        last = message.created_at.astimezone(ARGENTINA).date()
+        self.sales.record(message,files,wanted,first,last)
+        for delivery,buyer,names in self.sales.pending(channel.id):
+            if buyer != member.id:
+                raise SaleReview('El comprador no coincide con la entrega guardada.')
+            roles = [message.guild.get_role(ROLES[name]['id']) for name in names.split(',')]
+            if not all(roles) or any(r.managed or r.permissions.administrator or r >= message.guild.me.top_role for r in roles):
+                raise SaleReview('La jerarquía de rangos requiere revisión.')
+            member = await message.guild.fetch_member(buyer)
+            missing = [r for r in roles if r not in member.roles]
+            if missing:
+                await member.add_roles(*missing,reason=f'Compra de contingencia {delivery}')
+            member = await message.guild.fetch_member(buyer)
+            if not all(r in member.roles for r in roles):
+                raise RuntimeError('Discord todavía no confirmó la entrega')
+            self.state.execute('UPDATE sale_deliveries SET done=1 WHERE id=?',(delivery,))
+        return self.sales.summarize(channel.id) or ('Anoté **'+', '.join(wanted)+'**. '+AUTO if wanted else AUTO)
 
     async def grant(self, message):
         """Confirmación humana contra un comprobante del comprador en el mismo ticket."""
@@ -255,6 +367,9 @@ class LocalTickets(discord.Client):
             return
         digests = {hashlib.sha256(await a.read()).hexdigest() for a in attachments}
         for digest in digests:
+            if self.state.execute('SELECT 1 FROM sale_payments WHERE digest=?',(digest,)).fetchone():
+                await message.reply('Ese pago ya está en el registro automático. Revisá el estado de esa venta.',mention_author=False)
+                return
             row = self.state.execute('SELECT receipt FROM receipt_files WHERE digest=?',(digest,)).fetchone()
             if row and row[0] != receipt.id:
                 await message.reply('Ese archivo ya se usó en otra entrega local.',mention_author=False)
@@ -292,37 +407,111 @@ def main():
     parser.add_argument('--since',type=dt.datetime.fromisoformat,required=True)
     parser.add_argument('--guild',type=int,required=True)
     parser.add_argument('--bot',type=int,required=True)
-    parser.add_argument('--until',type=dt.datetime.fromisoformat,required=True)
+    parser.add_argument('--until',type=dt.datetime.fromisoformat,help='Fin anticipado opcional de la atención local')
     parser.add_argument('--log',type=Path)
     args = parser.parse_args()
-    if args.since.tzinfo is None or args.until.tzinfo is None or args.until <= args.since:
+    if args.since.tzinfo is None or (args.until and (args.until.tzinfo is None or args.until <= args.since)):
         parser.error('El intervalo requiere fechas ordenadas con zona horaria')
     handlers = [RotatingFileHandler(args.log,maxBytes=2_000_000,backupCount=2,encoding='utf-8')] if args.log else None
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(name)s %(message)s',handlers=handlers)
     load_dotenv(Path(__file__).with_name('.env'))
     async def serve():
-        guard = QuotaGuard(os.environ['DATABASE_URL'])
-        if not await guard.blocked():
-            log.info('Neon disponible. No se inicia atención temporal.')
-            return
-        async with LocalTickets(args.state,discord.utils.time_snowflake(args.since),args.guild,args.bot,guard) as client:
+        dsn = os.environ['DATABASE_URL']
+        if args.state.is_file():
+            db = sqlite3.connect(args.state)
             try:
-                async with asyncio.timeout((args.until-discord.utils.utcnow()).total_seconds()):
-                    await client.start(os.environ['DISCORD_TOKEN'])
-            except TimeoutError:
-                log.info('Fin de la ventana temporal')
+                cutover = db.execute("SELECT 1 FROM sqlite_master WHERE name='sale_cutover'").fetchone()
+                cutover = cutover and db.execute('SELECT 1 FROM sale_cutover').fetchone()
             finally:
-                client.reconcile.cancel()
-                client.state.close()
-
-    if discord.utils.utcnow() < args.until:
-        with socket.socket() as single_instance:
-            single_instance.bind(('127.0.0.1',49837))
+                db.close()
+            if cutover:
+                await hand_back(args.state,args.guild,dsn)
+                return
+        guard = QuotaGuard(dsn)
+        quota_blocked = False
+        while args.until is None or discord.utils.utcnow() < args.until:
             try:
-                asyncio.run(serve())
-            except Exception as exc:
-                log.error('No se pudo mantener la atención local: %s',type(exc).__name__)
-                raise
+                quota_blocked = await guard.blocked()
+                break
+            except (OSError,asyncpg.PostgresConnectionError):
+                log.info('Esperando conexión luego del inicio de Windows')
+                await asyncio.sleep(60)
+        if quota_blocked:
+            async with LocalTickets(args.state,discord.utils.time_snowflake(args.since),args.guild,args.bot,guard) as client:
+                bind_database(client.state,dsn,initialize=True)
+                try:
+                    remaining = (args.until-discord.utils.utcnow()).total_seconds() if args.until else None
+                    async with asyncio.timeout(remaining):
+                        await client.start(os.environ['DISCORD_TOKEN'])
+                except TimeoutError:
+                    log.info('Fin de la ventana temporal')
+                finally:
+                    client.stopping = True
+                    client.reconcile.stop()
+                    await client.close()
+                    async with client.lock:
+                        client.reconcile.cancel()
+                        client.state.close()
+        await hand_back(args.state,args.guild,dsn)
+
+    with socket.socket() as single_instance:
+        single_instance.bind(('127.0.0.1',49837))
+        try:
+            asyncio.run(serve())
+        except Exception as exc:
+            log.error('No se pudo mantener la atención local: %s',type(exc).__name__)
+            raise
+
+
+def bind_database(db, dsn, *, initialize=False):
+    target = urlsplit(dsn)
+    identity = (target.hostname or '').replace('-pooler.', '.') + ':' + str(target.port or 5432) + target.path
+    fingerprint = hashlib.sha256(identity.encode()).hexdigest()
+    db.execute('CREATE TABLE IF NOT EXISTS sale_target(id INTEGER PRIMARY KEY CHECK(id=1), fingerprint TEXT NOT NULL)')
+    if initialize:
+        db.execute('INSERT OR IGNORE INTO sale_target VALUES (1,?)',(fingerprint,))
+    if db.execute('SELECT fingerprint FROM sale_target').fetchone() != (fingerprint,):
+        raise RuntimeError('El destino de la importación no coincide con la base original')
+
+
+async def hand_back(path, guild, dsn):
+    if not path.is_file():
+        raise FileNotFoundError('No se encontró el registro local de la contingencia')
+    db = sqlite3.connect(path,isolation_level=None)
+    try:
+        bind_database(db,dsn)
+        LocalSales(db)
+        db.execute('CREATE TABLE IF NOT EXISTS sale_cutover (id INTEGER PRIMARY KEY CHECK(id=1))')
+        db.execute('INSERT OR IGNORE INTO sale_cutover VALUES (1)')
+        db.execute('CREATE TABLE IF NOT EXISTS sale_handoff (id INTEGER PRIMARY KEY CHECK(id=1), completed TEXT NOT NULL)')
+        if db.execute('SELECT 1 FROM sale_handoff').fetchone():
+            return
+        while True:
+            try:
+                conn = await asyncpg.connect(dsn,timeout=15,command_timeout=45)
+            except (OSError,asyncpg.PostgresConnectionError,asyncpg.InsufficientResourcesError) as exc:
+                log.info('Importación pendiente de conexión a Neon: %s',type(exc).__name__)
+                await asyncio.sleep(600)
+                continue
+            try:
+                count = await import_sales(db,conn,guild)
+            except (OSError,asyncpg.PostgresConnectionError,asyncpg.InsufficientResourcesError) as exc:
+                log.warning('Importación interrumpida, se retomará: %s',type(exc).__name__)
+                count = None
+            finally:
+                await conn.close()
+            if count is None:
+                await asyncio.sleep(120)
+                continue
+            conflicts = db.execute('SELECT COUNT(*) FROM sale_import_conflicts').fetchone()[0]
+            if conflicts:
+                log.error('Importación parcial. Tickets con datos distintos en Neon: %s. Se conserva el libro local.',conflicts)
+            else:
+                db.execute('INSERT INTO sale_handoff VALUES (1,?)',(discord.utils.utcnow().isoformat(),))
+                log.info('Importación a Neon verificada. Ventas copiadas en esta ejecución: %s',count)
+            return
+    finally:
+        db.close()
 
 
 if __name__ == '__main__':

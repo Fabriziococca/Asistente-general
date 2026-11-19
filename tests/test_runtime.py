@@ -14,6 +14,7 @@ import discord
 from main import Bot, supervise
 from runtime_health import HealthState, health_handler
 from test_tickets import Connection, pool_for
+from test_tickets import fixture
 
 
 class HealthTests(unittest.TestCase):
@@ -50,6 +51,36 @@ class HealthTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_ticket_recovery_only_wakes_database_once_per_hour(self):
+        cog, _, _ = fixture()
+        cog.bot.guilds = []
+        cog._recover_messages = AsyncMock(return_value=False)
+        cog._recover_deliveries = AsyncMock(return_value=False)
+        cog.inbox.next_retry_time = AsyncMock(return_value=None)
+        for minute in range(0, 61, 5):
+            with patch('cogs.tickets.time.time', return_value=10000 + minute*60):
+                await cog._run_recovery()
+        self.assertEqual(cog.inbox.next_retry_time.await_count, 2)
+        self.assertEqual(cog._recover_deliveries.await_count, 2)
+
+    async def test_pending_work_is_retried_before_idle_sweep(self):
+        cog, _, _ = fixture()
+        cog.bot.guilds = []
+        cog._recover_messages = AsyncMock(return_value=False)
+        cog._recover_deliveries = AsyncMock(return_value=False)
+        cog.inbox.next_retry_time = AsyncMock(side_effect=[10700, None])
+        for stamp in (10000,10300,10600,10900):
+            with patch('cogs.tickets.time.time', return_value=stamp):
+                await cog._run_recovery()
+        self.assertEqual(cog._recover_messages.await_count, 2)
+
+    async def test_unrelated_member_departure_skips_sql(self):
+        cog, conn, message = fixture()
+        conn.fetch = AsyncMock(return_value=[])
+        cog._ticket_owners = {message.author.id + 1}
+        await cog.on_member_remove(message.author)
+        conn.fetch.assert_not_awaited()
+
     async def test_database_health_recovers_ten_seconds_after_transient_timeout(self):
         conn = Connection()
         conn.fetchval = AsyncMock(side_effect=[TimeoutError(), 1])

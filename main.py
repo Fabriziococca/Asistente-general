@@ -14,6 +14,30 @@ from runtime_health import HealthState, start_health_server
 log = logging.getLogger('asistente')
 
 
+class MonitoredPool:
+    """El estado HTTP también refleja las conexiones usadas por el trabajo real."""
+
+    def __init__(self, pool, health):
+        self.pool = pool
+        self.health = health
+
+    @contextlib.asynccontextmanager
+    async def acquire(self, *, timeout):
+        try:
+            async with self.pool.acquire(timeout=timeout) as connection:
+                self.health.update(database=True)
+                yield connection
+        except (OSError, asyncpg.PostgresConnectionError, asyncpg.InsufficientResourcesError):
+            self.health.update(database=False)
+            raise
+
+    async def close(self):
+        await self.pool.close()
+
+    def terminate(self):
+        self.pool.terminate()
+
+
 class Bot(commands.Bot):
     def __init__(self, database_url=None, health=None):
         intents = discord.Intents.default()
@@ -39,10 +63,10 @@ class Bot(commands.Bot):
             await interaction.response.send_message(text, ephemeral=True)
 
     async def setup_hook(self):
-        self._health_task = asyncio.create_task(self._monitor_health())
         # Un error esencial aborta este cliente; el supervisor crea uno nuevo.
-        self.pool = await asyncpg.create_pool(dsn=self.database_url, min_size=0, max_size=5,
+        pool = await asyncpg.create_pool(dsn=self.database_url, min_size=0, max_size=5,
             command_timeout=20, timeout=20, max_inactive_connection_lifetime=10)
+        self.pool = MonitoredPool(pool, self.health)
         async with self.pool.acquire(timeout=15) as conn:
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS bumps (
@@ -56,6 +80,7 @@ class Bot(commands.Bot):
             await self.load_extension(extension)
             log.info('Módulo cargado: %s', extension)
         self.health.update(tickets=True)
+        self._health_task = asyncio.create_task(self._monitor_health())
         self._sync_task = asyncio.create_task(self._sync_commands())
 
     async def _sync_commands(self):
@@ -73,7 +98,7 @@ class Bot(commands.Bot):
         checked = 0
         while not self.is_closed():
             self.health.update(discord=self.is_ready())
-            database_check_interval = 300 if self.health.snapshot()['database'] else 10
+            database_check_interval = 3600 if self.health.snapshot()['database'] else 10
             if self.pool is not None and time.monotonic()-checked >= database_check_interval:
                 try:
                     async with self.pool.acquire(timeout=10) as conn:
@@ -123,6 +148,10 @@ async def supervise(token, database_url, health, *, bot_factory=Bot, sleep=async
         except discord.LoginFailure:
             log.error('La credencial de Discord fue rechazada; requiere intervención')
             raise
+        except asyncpg.InsufficientResourcesError as exc:
+            if 'quota' in str(exc).lower():
+                delay = 3600
+            log.warning('Postgres sin recursos. Próximo intento en %s segundos', delay)
         except Exception as exc:
             log.warning('Reinicio recuperable: %s', type(exc).__name__)
         finally:

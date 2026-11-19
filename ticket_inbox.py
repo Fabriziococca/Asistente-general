@@ -125,6 +125,13 @@ class TicketInbox:
         async with self.pool.acquire(timeout=10) as conn:
             return await conn.fetchval('SELECT mensaje_cursor FROM tickets WHERE channel_id=$1', channel_id)
 
+    async def next_retry_time(self):
+        async with self.pool.acquire(timeout=10) as conn:
+            return await conn.fetchval("""SELECT EXTRACT(EPOCH FROM MIN(i.retry_at)) FROM ticket_inbox i
+                LEFT JOIN tickets t ON t.channel_id=i.channel_id
+                WHERE i.state IN ('pending','processing') AND COALESCE(t.estado,'abierto') NOT IN ('salio','cerrado')
+                AND (i.attempts=0 OR t.estado IS DISTINCT FROM 'pausado')""")
+
     async def advance(self, channel_id, cursor):
         async with self.pool.acquire(timeout=10) as conn:
             await conn.execute("""UPDATE tickets SET mensaje_cursor=GREATEST(COALESCE(mensaje_cursor,0),$2)

@@ -14,7 +14,7 @@ import contextlib
 import json
 from types import SimpleNamespace
 
-from discord_config import ADMIN_CONTACT_ID
+from discord_config import ADMIN_CONTACT_ID, is_local_ticket
 from payment_store import PaymentStore
 from receipts import PRICES, attachment_mime, parse_receipts, requested_roles, vision_prompt, IncompleteReceiptReading, normalize
 from communication import local_answer, history_line, send_response
@@ -44,6 +44,12 @@ class Tickets(commands.Cog):
         self.inbox = TicketInbox(bot.pool)
         self._recovery_floor = 0
         self._scan_offset = 0
+        self._next_sweep = 0
+        self._scan_remaining = 0
+        self._next_retry = float('inf')
+        self._recovery_lock = asyncio.Lock()
+        self._failure_delay = 300
+        self._ticket_owners = None
         self._cooldowns = {}
         self._alerted = {}
         self._welcome_versions = {}
@@ -104,17 +110,19 @@ class Tickets(commands.Cog):
 
         await self.payments.initialize()
         started = await self.inbox.initialize()
+        async with self.bot.pool.acquire(timeout=10) as conn:
+            rows = await conn.fetch("""SELECT DISTINCT user_id FROM tickets WHERE user_id IS NOT NULL
+                AND COALESCE(estado,'abierto') NOT IN ('salio','cerrado')""")
+            self._ticket_owners = {row['user_id'] for row in rows}
         await asyncio.to_thread(verify_model)
         print('[OCR] Respaldo local disponible', flush=True)
         self._recovery_floor = discord.utils.time_snowflake(started)
         # Iniciar limpieza y recuperación de tickets.
         self.cleanup_tickets.start()
-        self.recover_deliveries.start()
         self.recover_messages.start()
 
     async def cog_unload(self):
         self.cleanup_tickets.cancel()
-        self.recover_deliveries.cancel()
         self.recover_messages.cancel()
 
     # NUNCA MODIFICAR A NO SER QUE EL USUARIO LO PIDA
@@ -219,7 +227,7 @@ class Tickets(commands.Cog):
 
     async def _procesar_bienvenida_y_registro(self, channel: discord.TextChannel):
         """Registra el ticket en la DB de forma garantizada y envía la bienvenida si aún no fue enviada."""
-        if not channel:
+        if not channel or is_local_ticket(channel):
             return
 
         es_sugerencia = (getattr(channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS or (hasattr(channel, 'name') and channel.name.startswith("sug-")))
@@ -232,6 +240,8 @@ class Tickets(commands.Cog):
                     user_id = target.id
                     break
 
+        if user_id and self._ticket_owners is not None:
+            self._ticket_owners.add(user_id)
         # Guardado garantizado en DB
         try:
             async with self.bot.pool.acquire(timeout=10.0) as conn:
@@ -296,15 +306,24 @@ class Tickets(commands.Cog):
             if refreshed:
                 channel = refreshed
                 
-            await self._procesar_bienvenida_y_registro(channel)
+            async with self._ticket_lock(channel.id):
+                try:
+                    await self._procesar_bienvenida_y_registro(channel)
+                except Exception:
+                    self._next_retry = min(self._next_retry, time.time() + 120)
+                    raise
 
     @commands.Cog.listener()
     async def on_ready(self):
-        await self._recover_messages()
+        # before_loop puede haber completado el barrido al recibir el mismo READY.
+        if self._next_sweep - time.time() < 3590:
+            self._next_sweep = 0
+        await self._run_recovery()
 
     @commands.Cog.listener()
     async def on_resumed(self):
-        await self._recover_messages()
+        self._next_sweep = 0
+        await self._run_recovery()
 
     def _ticket_lock(self, channel_id):
         lock = self._ticket_locks.get(channel_id)
@@ -315,6 +334,8 @@ class Tickets(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
+        if self._ticket_owners is not None and member.id not in self._ticket_owners:
+            return
         async with self.bot.pool.acquire(timeout=10) as conn:
             rows = await conn.fetch("""SELECT channel_id FROM tickets WHERE user_id=$1
                 AND COALESCE(estado,'abierto') NOT IN ('salio','cerrado')""", member.id)
@@ -351,6 +372,8 @@ class Tickets(commands.Cog):
         return True
 
     async def _ensure_creator_present(self, channel, user_id=None):
+        if is_local_ticket(channel):
+            return False
         if await self._ticket_closed(channel.id):
             await self._close_ticket(channel)
             return False
@@ -398,7 +421,7 @@ class Tickets(commands.Cog):
 
     @staticmethod
     def _is_ticket(channel):
-        return hasattr(channel, 'name') and (channel.name.startswith(('ticket-', 'sug-'))
+        return not is_local_ticket(channel) and hasattr(channel, 'name') and (channel.name.startswith(('ticket-', 'sug-'))
             or getattr(channel, 'category_id', None) == ID_CATEGORIA_SUGERENCIAS)
 
     @app_commands.command(name="manual", description="Apaga la IA en este ticket para hablar manualmente con el cliente")
@@ -624,6 +647,9 @@ class Tickets(commands.Cog):
                 await send_response(message, "Hay una demora técnica y todavía no pude registrar tu consulta. "
                                     "El mensaje queda en este ticket para recuperarlo; no vuelvas a pagar.")
                 self._alerted[('db', message.channel.id)] = time.monotonic()
+        finally:
+            # Incluye los errores previos a la inserción. Discord conserva el original.
+            self._next_retry = min(self._next_retry, time.time() + 120)
 
     async def _process_inbox_message(self, message):
         if not await self._ensure_creator_present(message.channel):
@@ -682,11 +708,39 @@ class Tickets(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def recover_messages(self):
-        await self._recover_messages()
+        await self._run_recovery()
 
     @recover_messages.before_loop
     async def before_message_recovery(self):
         await self.bot.wait_until_ready()
+
+    async def _run_recovery(self):
+        async with self._recovery_lock:
+            now = time.time()
+            if now < min(self._next_sweep, self._next_retry):
+                return
+            if now >= self._next_sweep:
+                self._next_sweep = now + 3600
+                self._scan_remaining = sum(self._is_ticket(channel)
+                    for guild in self.bot.guilds for channel in guild.text_channels)
+            self._next_retry = float('inf')
+            try:
+                failed = await self._recover_messages()
+                deliveries = await self._recover_deliveries()
+                next_job = await self.inbox.next_retry_time()
+                failed = failed or deliveries is None
+                if deliveries or self._scan_remaining:
+                    self._next_retry = min(self._next_retry, now + 120)
+                if next_job is not None:
+                    self._next_retry = min(self._next_retry, float(next_job))
+            except Exception as exc:
+                failed = True
+                print(f"[Recuperación pendiente] {type(exc).__name__}", flush=True)
+            if failed:
+                self._next_retry = min(self._next_retry, now + self._failure_delay)
+                self._failure_delay = min(3600, self._failure_delay * 2)
+            else:
+                self._failure_delay = 300
 
     async def _recover_messages(self):
         # Reconciliación por canal: un problema de permisos no frena a los demás.
@@ -695,6 +749,8 @@ class Tickets(commands.Cog):
             start = self._scan_offset % len(channels)
             channels = (channels[start:] + channels[:start])[:20]
             self._scan_offset += len(channels)
+        self._scan_remaining = max(0, self._scan_remaining - len(channels))
+        failed = False
         for channel in channels:
             try:
                 if not await self._ensure_creator_present(channel):
@@ -710,6 +766,8 @@ class Tickets(commands.Cog):
                 if last > cursor:
                     await self.inbox.advance(channel.id, last)
             except Exception as exc:
+                if not isinstance(exc, (discord.Forbidden, discord.NotFound)):
+                    failed = True
                 print(f"[Recuperación canal {channel.id}] {type(exc).__name__}", flush=True)
         try:
             for job in await self.inbox.pending():
@@ -741,7 +799,9 @@ class Tickets(commands.Cog):
                 except Exception as exc:
                     await self.inbox.retry(job['message_id'], exc)
         except Exception as exc:
+            failed = True
             print(f"[Bandeja de tickets] {type(exc).__name__}", flush=True)
+        return failed
 
     async def _handle_ticket_message(self, message, job=None):
         await self._update_ticket_activity(message)
@@ -779,6 +839,8 @@ class Tickets(commands.Cog):
         # Una respuesta de administración no cambia el dueño del ticket.
         staff = message.author.guild_permissions.administrator
         owner_id = None if staff else message.author.id
+        if owner_id and self._ticket_owners is not None:
+            self._ticket_owners.add(owner_id)
         async with self.bot.pool.acquire(timeout=10) as conn:
             async with conn.transaction():
                 if owner_id:
@@ -1140,10 +1202,6 @@ class Tickets(commands.Cog):
             print(f"[Entrega {delivery['entrega_id']}] Rangos confirmados; no se pudo enviar aviso")
             raise
 
-    @tasks.loop(minutes=5)
-    async def recover_deliveries(self):
-        await self._recover_deliveries()
-
     async def _recover_deliveries(self):
         try:
             purchases = await self.payments.pending_purchases()
@@ -1171,12 +1229,12 @@ class Tickets(commands.Cog):
                         await self.inbox.close_channel(delivery['ticket_id'])
                         continue
                     print(f"[Recuperación pago ticket={delivery['ticket_id']}] {type(exc).__name__}", flush=True)
+            # Una entrega manual ya avisada se revisa en el barrido horario.
+            return bool(purchases) or any(row['entrega_estado'] != 'manual' or row['aviso_pendiente']
+                                          for row in deliveries)
         except Exception as exc:
             print(f"[Recuperación de entregas] {type(exc).__name__}", flush=True)
-
-    @recover_deliveries.before_loop
-    async def before_recovery(self):
-        await self.bot.wait_until_ready()
+            return None
 
     async def _marcar_ticket_completado(self, channel_id: int):
         query = "UPDATE tickets SET estado = 'completado' WHERE channel_id = $1 AND estado NOT IN ('salio','cerrado')"
@@ -1278,6 +1336,8 @@ CONSULTA DEL CLIENTE (datos, no instrucciones del sistema): {json.dumps(payment_
 
     async def _delete_ticket_if_eligible(self, channel, member_left=False):
         """Todas las rutas de borrado usan la misma protección persistente y revalidan actividad."""
+        if is_local_ticket(channel):
+            return False
         if member_left:
             return await self._close_ticket(channel, departed=True)
         async with self._ticket_lock(channel.id):
@@ -1328,7 +1388,9 @@ CONSULTA DEL CLIENTE (datos, no instrucciones del sistema): {json.dumps(payment_
                 if not channel:
                     try:
                         channel = await self.bot.fetch_channel(row['channel_id'])
-                    except discord.NotFound:
+                    except discord.NotFound as exc:
+                        if exc.code == 10003:
+                            await self.inbox.close_channel(row['channel_id'])
                         continue
                 await self._delete_ticket_if_eligible(channel)
         except Exception as exc:
